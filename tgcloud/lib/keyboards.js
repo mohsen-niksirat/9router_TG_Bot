@@ -1,0 +1,184 @@
+/**
+ * Keyboard builders for 9Router TG Bot.
+ * All callback_data strings must be ≤ 64 bytes.
+ */
+
+import { ROUTING_POLICIES } from 'lib/providers';
+
+// ─── Escape HTML ──────────────────────────────────────────────────────────────
+export function escHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// ─── Main Menu ────────────────────────────────────────────────────────────────
+export function mainMenuKeyboard(user, combo) {
+  const comboLabel = combo ? `🔀 ${combo.name}` : '🔀 بدون کمبو';
+  return {
+    inline_keyboard: [
+      [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
+      [{ text: comboLabel, callback_data: 'a:combos' }],
+      [
+        { text: '🔑 کلیدها', callback_data: 'a:keys' },
+        { text: '🌐 ارائه‌دهنده‌ها', callback_data: 'a:providers' },
+      ],
+      [
+        { text: '📊 آمار توکن‌ها', callback_data: 'a:stats' },
+        { text: '❓ راهنما', callback_data: 'a:help' },
+      ],
+    ],
+  };
+}
+
+export function mainReplyKeyboard() {
+  return {
+    keyboard: [
+      ['💬 چت با هوش مصنوعی', '🔀 کمبوهای من'],
+      ['🔑 مدیریت کلیدها', '🌐 ارائه‌دهنده‌ها'],
+      ['📊 آمار توکن‌ها', '❓ راهنما'],
+    ],
+    resize_keyboard: true,
+    persistent: true,
+  };
+}
+
+export function backKeyboard(cb = 'a:menu') {
+  return { inline_keyboard: [[{ text: '🔙 بازگشت', callback_data: cb }]] };
+}
+
+// ─── Keys Management ──────────────────────────────────────────────────────────
+export function keysKeyboard(keys, providers) {
+  const rows = [];
+
+  // Group by provider slug
+  const byProvider = {};
+  for (const k of keys) {
+    if (!byProvider[k.providerSlug]) byProvider[k.providerSlug] = [];
+    byProvider[k.providerSlug].push(k);
+  }
+
+  for (const [slug, kList] of Object.entries(byProvider)) {
+    const prov = providers.find((p) => p.slug === slug);
+    const provName = prov ? prov.name : slug;
+    rows.push([{ text: `─── ${provName} ───`, callback_data: 'noop' }]);
+    for (const k of kList) {
+      const statusIcon = k.status === 'active' ? '✅' : k.status === 'cooldown' ? '⏳' : '❌';
+      rows.push([
+        { text: `${statusIcon} ${k.label || k.providerSlug}`, callback_data: `k:view:${k.id}` },
+      ]);
+    }
+  }
+
+  rows.push([{ text: '➕ افزودن کلید جدید', callback_data: 'k:add_pick_prov' }]);
+  rows.push([{ text: '🔙 منوی اصلی', callback_data: 'a:menu' }]);
+  return { inline_keyboard: rows };
+}
+
+export function keyDetailKeyboard(key, allKeys) {
+  const sorted = allKeys
+    .filter((k) => k.providerSlug === key.providerSlug)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  const idx = sorted.findIndex((k) => k.id === key.id);
+  const rows = [];
+
+  const navRow = [];
+  if (idx > 0) navRow.push({ text: '⬆️ بالاتر', callback_data: `k:up:${key.id}` });
+  if (idx < sorted.length - 1) navRow.push({ text: '⬇️ پایین‌تر', callback_data: `k:dn:${key.id}` });
+  if (navRow.length > 0) rows.push(navRow);
+
+  rows.push([{ text: '🗑️ حذف این کلید', callback_data: `k:del:${key.id}` }]);
+  rows.push([{ text: '🔙 بازگشت به لیست کلیدها', callback_data: 'a:keys' }]);
+  return { inline_keyboard: rows };
+}
+
+export function providerPickerForKey(providers) {
+  const rows = providers.map((p) => [
+    { text: p.name, callback_data: `k:add:${p.slug}`.slice(0, 64) },
+  ]);
+  rows.push([{ text: '🔙 بازگشت', callback_data: 'a:keys' }]);
+  return { inline_keyboard: rows };
+}
+
+// ─── Providers Management ─────────────────────────────────────────────────────
+export function providersKeyboard(providers) {
+  const rows = providers.map((p) => [
+    {
+      text: `${p.isBuiltin ? '🏷️' : '🔧'} ${p.name}`,
+      callback_data: `p:view:${p.id}`,
+    },
+  ]);
+  rows.push([{ text: '➕ افزودن ارائه‌دهنده سفارشی', callback_data: 'p:add' }]);
+  rows.push([{ text: '🔙 منوی اصلی', callback_data: 'a:menu' }]);
+  return { inline_keyboard: rows };
+}
+
+export function providerDetailKeyboard(prov) {
+  const rows = [];
+  if (!prov.isBuiltin) {
+    rows.push([{ text: '🗑️ حذف این ارائه‌دهنده', callback_data: `p:del:${prov.id}` }]);
+  }
+  rows.push([{ text: '✏️ ویرایش مدل‌ها', callback_data: `p:models:${prov.id}` }]);
+  rows.push([{ text: '🔙 بازگشت', callback_data: 'a:providers' }]);
+  return { inline_keyboard: rows };
+}
+
+// ─── Combos ───────────────────────────────────────────────────────────────────
+export function combosKeyboard(comboList, activeComboId) {
+  const rows = comboList.map((c) => {
+    const active = c.id === activeComboId ? '✅ ' : '';
+    return [{ text: `${active}🔀 ${c.name}`, callback_data: `c:view:${c.id}` }];
+  });
+  rows.push([{ text: '➕ ایجاد کمبو جدید', callback_data: 'c:create' }]);
+  rows.push([{ text: '🔙 منوی اصلی', callback_data: 'a:menu' }]);
+  return { inline_keyboard: rows };
+}
+
+export function comboDetailKeyboard(combo, isActive) {
+  const rows = [];
+  if (!isActive) {
+    rows.push([{ text: '✅ فعال کردن این کمبو', callback_data: `c:select:${combo.id}` }]);
+  } else {
+    rows.push([{ text: '❎ غیرفعال کردن (بدون کمبو)', callback_data: 'c:deselect' }]);
+  }
+  rows.push([{ text: '✏️ ویرایش پرووایدرها', callback_data: `c:editprov:${combo.id}` }]);
+  rows.push([{ text: '🔄 تغییر سیاست مسیریابی', callback_data: `c:policy:${combo.id}` }]);
+  rows.push([{ text: '🗑️ حذف این کمبو', callback_data: `c:del:${combo.id}` }]);
+  rows.push([{ text: '🔙 بازگشت', callback_data: 'a:combos' }]);
+  return { inline_keyboard: rows };
+}
+
+export function routingPolicyKeyboard(comboId) {
+  const rows = Object.entries(ROUTING_POLICIES).map(([key, val]) => [
+    { text: val.name, callback_data: `c:setpol:${comboId}:${key}`.slice(0, 64) },
+  ]);
+  rows.push([{ text: '🔙 بازگشت', callback_data: `c:view:${comboId}` }]);
+  return { inline_keyboard: rows };
+}
+
+export function comboProviderPickerKeyboard(providers, selected, comboId) {
+  const rows = providers.map((p) => {
+    const checked = selected.includes(p.slug) ? '✅ ' : '';
+    return [{
+      text: `${checked}${p.name}`,
+      callback_data: `c:togprov:${comboId}:${p.slug}`.slice(0, 64),
+    }];
+  });
+  rows.push([{ text: '💾 ذخیره', callback_data: `c:saveprov:${comboId}` }]);
+  rows.push([{ text: '🔙 لغو', callback_data: `c:view:${comboId}` }]);
+  return { inline_keyboard: rows };
+}
+
+// ─── Chat ─────────────────────────────────────────────────────────────────────
+export function chatActionsKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🔄 پیام جدید', callback_data: 'a:new_chat' },
+        { text: '🗑️ پاک کردن تاریخچه', callback_data: 'a:clear_history' },
+      ],
+      [{ text: '🔙 منوی اصلی', callback_data: 'a:menu' }],
+    ],
+  };
+}

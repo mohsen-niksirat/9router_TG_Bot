@@ -1,0 +1,14 @@
+{
+  "name": "NineRouter_TG_Bot",
+  "version": "1.0.0",
+  "description": "9Router-style Telegram AI chat bot with multi-provider/multi-key routing on tgcloud",
+  "main": "index.js",
+  "scripts": {
+    "push": "npx tgcloud push",
+    "migrate": "npx tgcloud migrate --safe",
+    "status": "npx tgcloud status"
+  },
+  "dependencies": {
+    "@tgcloud/cli": "latest"
+  }
+}
