@@ -1,0 +1,1648 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>9Router Chat — دستیار هوش مصنوعی</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+/* ─── CSS Variables & Telegram Palette ───────────────────────── */
+:root {
+  --bg: #0d0e15;
+  --bg2: #161822;
+  --bg3: #1f2230;
+  --card: #191b26;
+  --card2: #232638;
+  --border: rgba(255,255,255,0.08);
+  --border-focus: #7c5cfc;
+  --text: #f3f4f8;
+  --text2: #9da3ba;
+  --text3: #656c86;
+  --accent: #7c5cfc;
+  --accent-light: #9d85fd;
+  --accent-glow: rgba(124,92,252,0.35);
+  --green: #10b981;
+  --orange: #f59e0b;
+  --red: #ef4444;
+  --blue: #3b82f6;
+  --pink: #ec4899;
+  --user-bubble: linear-gradient(135deg, #7c5cfc 0%, #906ffa 100%);
+  --ai-bubble: #191b26;
+  --shadow: 0 8px 32px rgba(0,0,0,0.45);
+  --radius: 18px;
+  --radius-sm: 12px;
+  --tab-h: 62px;
+  --header-h: 58px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.light-mode {
+  --bg: #f4f5fa;
+  --bg2: #ffffff;
+  --bg3: #eef0f6;
+  --card: #ffffff;
+  --card2: #f6f7fb;
+  --border: rgba(0,0,0,0.08);
+  --text: #111827;
+  --text2: #4b5563;
+  --text3: #9ca3af;
+  --ai-bubble: #ffffff;
+  --shadow: 0 4px 20px rgba(0,0,0,0.08);
+}
+
+/* ─── Reset ─────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14.5px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+button { font-family: inherit; cursor: pointer; border: none; outline: none; background: none; color: inherit; }
+input, textarea, select { font-family: inherit; outline: none; border: none; background: none; color: inherit; }
+img { display: block; max-width: 100%; }
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* ─── Layout Shell ───────────────────────────────────────────── */
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* ─── Header ─────────────────────────────────────────────────── */
+.header {
+  flex-shrink: 0;
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  z-index: 10;
+}
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.header-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: var(--user-bubble);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+.header-titles h1 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+.header-titles p {
+  font-size: 11.5px;
+  color: var(--text3);
+}
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--bg3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: all 0.15s;
+}
+.icon-btn:active {
+  transform: scale(0.92);
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ─── Tab Content ─────────────────────────────────────────────── */
+.tab-content {
+  flex: 1;
+  overflow: hidden;
+  display: none;
+  flex-direction: column;
+}
+.tab-content.active {
+  display: flex;
+}
+
+/* ─── Bottom Tab Bar ─────────────────────────────────────────── */
+.tab-bar {
+  flex-shrink: 0;
+  height: var(--tab-h);
+  display: flex;
+  align-items: stretch;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 10;
+}
+.tab-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3);
+  transition: color 0.2s;
+  position: relative;
+}
+.tab-btn .tab-icon {
+  font-size: 20px;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.tab-btn.active {
+  color: var(--accent);
+}
+.tab-btn.active .tab-icon {
+  transform: translateY(-2px) scale(1.1);
+}
+.tab-btn::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 2.5px;
+  border-radius: 0 0 3px 3px;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+.tab-btn.active::after {
+  width: 28px;
+}
+
+/* ─── Chat Tab ─────────────────────────────────────────────────── */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.msg-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 100%;
+}
+.msg-row.user {
+  flex-direction: row-reverse;
+}
+.msg-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--bg3);
+  color: var(--text2);
+}
+.msg-row.user .msg-avatar {
+  background: var(--user-bubble);
+  color: #fff;
+}
+.msg-bubble-wrap {
+  max-width: 82%;
+  display: flex;
+  flex-direction: column;
+}
+.msg-bubble {
+  border-radius: 18px;
+  padding: 11px 15px;
+  background: var(--ai-bubble);
+  border: 1px solid var(--border);
+  word-break: break-word;
+  line-height: 1.6;
+  font-size: 14.5px;
+  position: relative;
+}
+.msg-row.user .msg-bubble {
+  background: var(--user-bubble);
+  border: none;
+  color: #ffffff;
+  border-bottom-left-radius: 4px;
+}
+.msg-row.ai .msg-bubble {
+  border-bottom-right-radius: 4px;
+}
+.msg-bubble img {
+  border-radius: 12px;
+  max-height: 260px;
+  width: 100%;
+  object-fit: cover;
+  margin-top: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+.msg-bubble pre {
+  background: rgba(0,0,0,0.3);
+  padding: 8px 10px;
+  border-radius: 8px;
+  overflow-x: auto;
+  direction: ltr;
+  text-align: left;
+  font-size: 12.5px;
+  margin: 6px 0;
+}
+.msg-bubble code {
+  background: rgba(0,0,0,0.25);
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  direction: ltr;
+  display: inline-block;
+}
+.msg-meta {
+  font-size: 10.5px;
+  color: var(--text3);
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.msg-row.user .msg-meta {
+  justify-content: flex-end;
+  color: rgba(255,255,255,0.6);
+}
+.provider-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: rgba(124,92,252,0.14);
+  color: var(--accent-light);
+  border: 1px solid rgba(124,92,252,0.25);
+}
+
+/* Typing indicator */
+.typing-box {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 16px;
+  background: var(--ai-bubble);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  width: fit-content;
+  margin: 0 16px 12px;
+}
+.typing-box.show { display: flex; }
+.typing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text3);
+  animation: bounce 1.2s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.18s; }
+.typing-dot:nth-child(3) { animation-delay: 0.36s; }
+@keyframes bounce { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1.1); opacity: 1; } }
+
+/* Chat input area */
+.chat-input-area {
+  flex-shrink: 0;
+  padding: 10px 14px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+}
+.chat-input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  background: var(--bg3);
+  border-radius: 22px;
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  gap: 8px;
+  transition: border-color 0.2s;
+}
+.chat-input-wrap:focus-within {
+  border-color: var(--border-focus);
+}
+.chat-input-wrap textarea {
+  flex: 1;
+  resize: none;
+  min-height: 22px;
+  max-height: 120px;
+  font-size: 14.5px;
+  line-height: 1.5;
+  background: transparent;
+}
+.chat-input-wrap textarea::placeholder {
+  color: var(--text3);
+}
+.attach-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  color: var(--text2);
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+.attach-btn:active {
+  transform: scale(0.9);
+  color: var(--accent);
+}
+.send-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--user-bubble);
+  font-size: 18px;
+  color: #fff;
+  box-shadow: 0 4px 14px var(--accent-glow);
+  transition: transform 0.1s;
+}
+.send-btn:active {
+  transform: scale(0.92);
+}
+.send-btn:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* Image preview banner above input */
+#img-preview-bar {
+  display: none;
+  padding: 8px 16px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+}
+#img-preview-bar.show { display: block; }
+.preview-inner {
+  position: relative;
+  display: inline-block;
+}
+.preview-inner img {
+  height: 64px;
+  width: 64px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 2px solid var(--accent);
+}
+.preview-close {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+
+/* Empty chat greeting */
+.chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px 20px;
+  color: var(--text2);
+  gap: 12px;
+}
+.chat-empty .empty-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  background: var(--bg2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  box-shadow: var(--shadow);
+}
+.chat-empty h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.chat-empty p {
+  font-size: 13.5px;
+  max-width: 280px;
+  color: var(--text3);
+}
+
+/* ─── Generic Section & Card Styles ─────────────────────────── */
+.section {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.section-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+.section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+.btn-primary-sm {
+  background: var(--user-bubble);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 2px 8px var(--accent-glow);
+  transition: transform 0.1s;
+}
+.btn-primary-sm:active { transform: scale(0.95); }
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.card-row {
+  display: flex;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+.card-row:last-child { border-bottom: none; }
+.card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  flex-shrink: 0;
+}
+.card-text {
+  flex: 1;
+  min-width: 0;
+}
+.card-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-sub {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.card-actions {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+/* Badges */
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.badge.active { background: rgba(16,185,129,0.15); color: var(--green); }
+.badge.cooldown { background: rgba(245,158,11,0.15); color: var(--orange); }
+.badge.dead { background: rgba(239,68,68,0.15); color: var(--red); }
+.badge.policy { background: rgba(124,92,252,0.15); color: var(--accent-light); }
+.badge.builtin { background: rgba(59,130,246,0.15); color: var(--blue); }
+.badge.custom { background: rgba(236,72,153,0.15); color: var(--pink); }
+
+/* Buttons */
+.btn-sm {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn-sm:active { transform: scale(0.94); }
+.btn-danger { background: rgba(239,68,68,0.12); color: var(--red); }
+.btn-ghost { background: var(--bg3); color: var(--text2); }
+.btn-success { background: rgba(16,185,129,0.14); color: var(--green); }
+
+.arrow-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  background: var(--bg3);
+  color: var(--text2);
+}
+.arrow-btn:active { background: var(--accent); color: #fff; }
+
+.combo-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 10px var(--green);
+  flex-shrink: 0;
+}
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.stat-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text3);
+  text-transform: uppercase;
+}
+.stat-value {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text);
+}
+.stat-sub {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+/* Profile Card */
+.profile-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.profile-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--user-bubble);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+  flex-shrink: 0;
+}
+.profile-name { font-size: 17px; font-weight: 700; }
+.profile-sub { font-size: 12.5px; color: var(--text3); }
+
+/* Empty state card */
+.empty-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--text3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.empty-card .empty-icon { font-size: 38px; opacity: 0.5; }
+
+/* ─── Modal / Sheet ───────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 9999;
+}
+.modal-overlay.open { display: flex; }
+.modal-sheet {
+  width: 100%;
+  max-width: 540px;
+  background: var(--bg2);
+  border-top-left-radius: 24px;
+  border-top-right-radius: 24px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  padding: 20px 20px calc(24px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 85vh;
+  overflow-y: auto;
+  animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-header h3 {
+  font-size: 17px;
+  font-weight: 700;
+}
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+}
+.form-input {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 14px;
+  transition: border-color 0.15s;
+}
+.form-input:focus {
+  border-color: var(--accent);
+}
+.form-select {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 14px;
+}
+.chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chip {
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.chip.selected {
+  background: rgba(124,92,252,0.2);
+  border-color: var(--accent);
+  color: var(--accent-light);
+}
+
+/* Toast */
+#toast {
+  position: fixed;
+  bottom: calc(var(--tab-h) + 16px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--card);
+  color: var(--text);
+  padding: 10px 18px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+  z-index: 10000;
+}
+#toast.show { opacity: 1; }
+
+/* Loading full-screen */
+#loading {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  z-index: 99999;
+  transition: opacity 0.3s;
+}
+#loading.hidden { opacity: 0; pointer-events: none; }
+.spinner {
+  width: 42px;
+  height: 42px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- Loading Screen -->
+<div id="loading">
+  <div class="spinner"></div>
+  <div style="color:var(--text3);font-size:13.5px">در حال اتصال به استخر ۹روتر...</div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- App Container -->
+<div id="app">
+  <!-- Top Header -->
+  <div class="header">
+    <div class="header-brand">
+      <div class="header-logo">🤖</div>
+      <div class="header-titles">
+        <h1>9Router Chat</h1>
+        <p id="active-combo-label">در حال بارگذاری...</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn" id="new-chat-btn" title="چت جدید">🔄</button>
+    </div>
+  </div>
+
+  <!-- Tab 1: Chat -->
+  <div class="tab-content active" id="tab-chat">
+    <div class="chat-messages" id="chat-messages">
+      <div class="chat-empty" id="chat-empty">
+        <div class="empty-icon">💬</div>
+        <h3>گفتگو با هوش مصنوعی</h3>
+        <p>از استخر کلیدها و کمبوهای اختصاصی خودت برای چت پرسرعت استفاده کن.</p>
+      </div>
+    </div>
+
+    <!-- Typing Indicator -->
+    <div class="typing-box" id="typing">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+    </div>
+
+    <!-- Image Attachment Preview Bar -->
+    <div id="img-preview-bar">
+      <div class="preview-inner">
+        <img id="img-preview-tag" src="" alt="preview">
+        <button class="preview-close" id="img-preview-close">✕</button>
+      </div>
+    </div>
+
+    <!-- Input Footer -->
+    <div class="chat-input-area">
+      <div class="chat-input-wrap">
+        <button class="attach-btn" id="attach-btn" title="پیوست تصویر">📎</button>
+        <textarea id="msg-input" placeholder="پیام خود را بنویسید..." rows="1"></textarea>
+      </div>
+      <button class="send-btn" id="send-btn" title="ارسال">➤</button>
+    </div>
+    <input type="file" id="file-input" accept="image/*" style="display:none">
+  </div>
+
+  <!-- Tab 2: Combos -->
+  <div class="tab-content" id="tab-combos">
+    <div class="section" id="combos-list">
+      <div class="section-top">
+        <div class="section-title">کمبوهای مسیریابی</div>
+        <button class="btn-primary-sm" onclick="openAddComboModal()">➕ ایجاد کمبو</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 3: Keys -->
+  <div class="tab-content" id="tab-keys">
+    <div class="section" id="keys-list">
+      <div class="section-top">
+        <div class="section-title">استخر کلیدهای API</div>
+        <button class="btn-primary-sm" onclick="openAddKeyModal()">➕ افزودن کلید</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 4: Settings -->
+  <div class="tab-content" id="tab-settings">
+    <div class="section" id="settings-section">
+      <div class="section-title">حساب کاربری و وضعیت توکن‌ها</div>
+    </div>
+  </div>
+
+  <!-- Bottom Nav Bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="chat">
+      <span class="tab-icon">💬</span>
+      <span>چت</span>
+    </button>
+    <button class="tab-btn" data-tab="combos">
+      <span class="tab-icon">🔀</span>
+      <span>کمبوها</span>
+    </button>
+    <button class="tab-btn" data-tab="keys">
+      <span class="tab-icon">🔑</span>
+      <span>کلیدها</span>
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      <span class="tab-icon">⚙️</span>
+      <span>تنظیمات</span>
+    </button>
+  </div>
+</div>
+
+<!-- Modal 1: Add Key -->
+<div class="modal-overlay" id="modal-add-key">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>🔑 افزودن کلید جدید</h3>
+      <button class="icon-btn" onclick="closeModal('modal-add-key')">✕</button>
+    </div>
+    <div class="form-group">
+      <label>ارائه‌دهنده (Provider):</label>
+      <select class="form-select" id="key-provider-select"></select>
+    </div>
+    <div class="form-group">
+      <label>نام / برچسب کلید (اختیاری):</label>
+      <input type="text" class="form-input" id="key-label-input" placeholder="مثلاً: کلید شخصی جمینای">
+    </div>
+    <div class="form-group">
+      <label>کلید API (API Key):</label>
+      <input type="password" class="form-input ltr" id="key-value-input" placeholder="AIzaSy... یا sk-...">
+    </div>
+    <button class="btn-primary-sm" style="padding:12px;justify-content:center;font-size:14px;border-radius:12px" onclick="submitAddKey()">
+      💾 ذخیره و رمزگذاری کلید
+    </button>
+  </div>
+</div>
+
+<!-- Modal 2: Add Combo -->
+<div class="modal-overlay" id="modal-add-combo">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>🔀 ایجاد کمبوی جدید</h3>
+      <button class="icon-btn" onclick="closeModal('modal-add-combo')">✕</button>
+    </div>
+    <div class="form-group">
+      <label>نام کمبو:</label>
+      <input type="text" class="form-input" id="combo-name-input" placeholder="مثلاً: پرسرعت رایگان">
+    </div>
+    <div class="form-group">
+      <label>ارائه‌دهنده‌های فعال در کمبو (به ترتیب اولویت):</label>
+      <div class="chips-container" id="combo-chips-container"></div>
+    </div>
+    <div class="form-group">
+      <label>سیاست مسیریابی (Routing Policy):</label>
+      <select class="form-select" id="combo-policy-select">
+        <option value="fallback">🛡️ فالبک اولویتی (Fallback)</option>
+        <option value="round_robin">🔄 راند رابین چرخشی (Round-Robin)</option>
+        <option value="smart_router">🧠 اسمارت روتر هوشمند (Smart Router)</option>
+        <option value="least_used">⚖️ کمترین توکن مصرفی (Least Used)</option>
+      </select>
+    </div>
+    <button class="btn-primary-sm" style="padding:12px;justify-content:center;font-size:14px;border-radius:12px" onclick="submitAddCombo()">
+      ✨ ساخت و فعال‌سازی کمبو
+    </button>
+  </div>
+</div>
+
+<script>
+// ─── Environment & Telegram Bridge ────────────────────────────
+const API_BASE = 'https://app9029829582.tgcloud.ai/endpoints/api';
+const tg = window.Telegram?.WebApp;
+
+(function initTheme() {
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    if (tg.colorScheme === 'light') {
+      document.documentElement.classList.add('light-mode');
+    }
+    const tc = tg.themeParams;
+    if (tc?.bg_color) document.documentElement.style.setProperty('--bg', tc.bg_color);
+    if (tc?.secondary_bg_color) document.documentElement.style.setProperty('--bg2', tc.secondary_bg_color);
+  }
+})();
+
+// ─── App State ────────────────────────────────────────────────
+let state = {
+  userData: null,
+  attachedImage: null,
+  isLoading: false,
+  selectedComboProviders: [],
+};
+
+// ─── Authentication Helper ────────────────────────────────────
+function getAuthPayload() {
+  if (tg?.initData) return { initData: tg.initData };
+  const uid = new URLSearchParams(location.search).get('uid');
+  if (uid) return { uid };
+  return {};
+}
+
+function haptic(type = 'light') {
+  try {
+    if (tg?.HapticFeedback) {
+      if (type === 'success') tg.HapticFeedback.notificationOccurred('success');
+      else if (type === 'error') tg.HapticFeedback.notificationOccurred('error');
+      else tg.HapticFeedback.impactOccurred(type);
+    }
+  } catch {}
+}
+
+// ─── API Wrapper ──────────────────────────────────────────────
+async function api(action, extra = {}) {
+  const auth = getAuthPayload();
+  const res = await fetch(API_BASE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...auth, ...extra }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function toast(msg, duration = 2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), duration);
+}
+
+// ─── Modal Helpers ────────────────────────────────────────────
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+  haptic('medium');
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+// ─── Tab Navigation ───────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach((t) => t.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + tab).classList.add('active');
+    haptic('light');
+
+    if (tab === 'combos') renderCombos();
+    if (tab === 'keys') renderKeys();
+    if (tab === 'settings') renderSettings();
+  });
+});
+
+// ─── Helper Formatters ────────────────────────────────────────
+function fmtTokens(n) {
+  return Number(n || 0).toLocaleString('fa-IR');
+}
+function statusBadge(status) {
+  const map = { active: '✅ فعال', cooldown: '⏳ خنک‌سازی', dead: '❌ قطع' };
+  return `<span class="badge ${status}">${map[status] || status}</span>`;
+}
+function policyBadge(policy) {
+  const map = {
+    fallback: '🛡️ فالبک',
+    round_robin: '🔄 راند رابین',
+    smart_router: '🧠 اسمارت روتر',
+    least_used: '⚖️ کم‌مصرف',
+  };
+  return `<span class="badge policy">${map[policy] || policy}</span>`;
+}
+function providerIcon(slug) {
+  const icons = { gemini: '✨', groq: '⚡', deepseek: '🌊', openai: '🤖', openrouter: '🔀' };
+  return icons[slug] || '🔧';
+}
+function escHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
+// ─── Chat System ──────────────────────────────────────────────
+function scrollToBottom() {
+  const el = document.getElementById('chat-messages');
+  el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+}
+
+function renderMessage(role, content, meta = {}) {
+  document.getElementById('chat-empty')?.remove();
+
+  const isUser = role === 'user';
+  const initial = state.userData?.user?.name?.[0] || 'U';
+  const timeStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+
+  // Extract embedded base64 or link images
+  const imgMatch = content.match(/\[Image: (data:[^\]]+)\]/);
+  const textContent = content.replace(/\[Image: data:[^\]]+\]/g, '').trim();
+
+  const el = document.createElement('div');
+  el.className = `msg-row ${isUser ? 'user' : 'ai'}`;
+
+  const bubbleBody = [
+    textContent ? `<div>${escHtml(textContent)}</div>` : '',
+    imgMatch ? `<img src="${imgMatch[1]}" alt="تصویر پیوست">` : '',
+  ].join('');
+
+  const provBadge = (!isUser && meta.provider)
+    ? `<span class="provider-badge">${providerIcon(meta.provider)} ${meta.provider} / ${meta.model || ''}</span>`
+    : '';
+
+  el.innerHTML = `
+    <div class="msg-avatar">${isUser ? initial : '🤖'}</div>
+    <div class="msg-bubble-wrap">
+      <div class="msg-bubble">${bubbleBody}</div>
+      <div class="msg-meta">${timeStr} ${provBadge}</div>
+    </div>
+  `;
+  document.getElementById('chat-messages').appendChild(el);
+  scrollToBottom();
+  return el;
+}
+
+async function loadHistory() {
+  try {
+    const res = await api('get_history');
+    if (res.ok && res.history?.length) {
+      document.getElementById('chat-empty')?.remove();
+      for (const msg of res.history) {
+        renderMessage(msg.role, msg.content, { provider: msg.provider, model: msg.model });
+      }
+    }
+  } catch {}
+}
+
+async function sendMessage() {
+  const input = document.getElementById('msg-input');
+  const text = input.value.trim();
+  const img = state.attachedImage;
+
+  if (!text && !img) return;
+  if (state.isLoading) return;
+
+  let fullMsg = text;
+  if (img) fullMsg = (text ? text + '\n' : '') + `[Image: ${img}]`;
+
+  renderMessage('user', fullMsg);
+  input.value = '';
+  input.style.height = '';
+  clearImagePreview();
+  state.isLoading = true;
+  haptic('medium');
+
+  document.getElementById('typing').classList.add('show');
+  scrollToBottom();
+  document.getElementById('send-btn').disabled = true;
+
+  try {
+    const res = await api('chat', { message: fullMsg });
+    document.getElementById('typing').classList.remove('show');
+
+    if (res.ok) {
+      renderMessage('ai', res.text, { provider: res.provider, model: res.model });
+      haptic('success');
+    } else {
+      renderMessage('ai', `❌ ${res.error || 'خطایی در تولید پاسخ رخ داد.'}`);
+      toast('❌ ' + (res.error || 'خطا در برقراری ارتباط'));
+      haptic('error');
+    }
+  } catch (err) {
+    document.getElementById('typing').classList.remove('show');
+    renderMessage('ai', '❌ متأسفانه ارتباط با سرور یا هوش مصنوعی برقرار نشد.');
+    toast('❌ قطع اتصال به سرور');
+    haptic('error');
+  }
+
+  state.isLoading = false;
+  document.getElementById('send-btn').disabled = false;
+}
+
+// Auto-expand textarea
+document.getElementById('msg-input').addEventListener('input', function () {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+document.getElementById('msg-input').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+document.getElementById('send-btn').addEventListener('click', sendMessage);
+
+// New Chat Button
+document.getElementById('new-chat-btn').addEventListener('click', async () => {
+  if (!confirm('آیا مایلید تاریخچه گفتگو پاک شود و گفتگوی جدیدی آغاز کنید؟')) return;
+  try {
+    await api('clear_history');
+    document.getElementById('chat-messages').innerHTML = `
+      <div class="chat-empty" id="chat-empty">
+        <div class="empty-icon">💬</div>
+        <h3>گفتگوی جدید آغاز شد</h3>
+        <p>پیام خود را ارسال فرمایید...</p>
+      </div>`;
+    toast('✅ تاریخچه پاک شد');
+    haptic('success');
+  } catch {
+    toast('❌ خطا در پاک‌سازی تاریخچه');
+  }
+});
+
+// Image Upload
+document.getElementById('attach-btn').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+document.getElementById('file-input').addEventListener('change', function () {
+  const file = this.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    state.attachedImage = e.target.result;
+    document.getElementById('img-preview-tag').src = e.target.result;
+    document.getElementById('img-preview-bar').classList.add('show');
+    haptic('light');
+  };
+  reader.readAsDataURL(file);
+  this.value = '';
+});
+document.getElementById('img-preview-close').addEventListener('click', clearImagePreview);
+function clearImagePreview() {
+  state.attachedImage = null;
+  document.getElementById('img-preview-bar').classList.remove('show');
+  document.getElementById('img-preview-tag').src = '';
+}
+
+// ─── Combos Management ────────────────────────────────────────
+function renderCombos() {
+  const data = state.userData;
+  if (!data) return;
+  const container = document.getElementById('combos-list');
+  const combos = data.combos || [];
+  const activeId = data.user?.activeComboId;
+
+  let html = `
+    <div class="section-top">
+      <div class="section-title">کمبوهای من (${combos.length})</div>
+      <button class="btn-primary-sm" onclick="openAddComboModal()">➕ ایجاد کمبو</button>
+    </div>`;
+
+  if (!combos.length) {
+    html += `
+      <div class="empty-card">
+        <div class="empty-icon">🔀</div>
+        <p>هنوز کمبویی تعریف نکرده‌اید! یک کمبو ایجاد کنید تا سیاست چرخش کلیدها فعال شود.</p>
+      </div>`;
+  } else {
+    const rows = combos.map((c) => {
+      const isActive = c.id === activeId;
+      const slugs = (c.providerSlugs || []).map((s) => `<code>${s}</code>`).join(' → ');
+      return `
+        <div class="card-row">
+          <div>${isActive ? '<div class="combo-dot"></div>' : '<span style="width:9px;display:inline-block"></span>'}</div>
+          <div class="card-icon" style="background:rgba(124,92,252,0.14)">🔀</div>
+          <div class="card-text">
+            <div class="card-title">${escHtml(c.name)}</div>
+            <div class="card-sub">${slugs} &nbsp; ${policyBadge(c.routingPolicy)}</div>
+          </div>
+          <div class="card-actions">
+            ${isActive
+              ? `<button class="btn-sm btn-ghost" onclick="deactivateCombo()">❎ غیرفعال</button>`
+              : `<button class="btn-sm btn-success" onclick="activateCombo(${c.id})">✅ انتخاب</button>`
+            }
+            <button class="btn-sm btn-danger" onclick="deleteCombo(${c.id}, '${escHtml(c.name)}')">🗑️</button>
+          </div>
+        </div>`;
+    }).join('');
+    html += `<div class="card">${rows}</div>`;
+  }
+  container.innerHTML = html;
+}
+
+async function activateCombo(id) {
+  try {
+    const res = await api('select_combo', { comboId: id });
+    if (res.ok) {
+      toast('✅ کمبو فعال شد');
+      haptic('success');
+      await refreshData();
+      renderCombos();
+      updateComboHeader();
+    } else toast('❌ ' + res.error);
+  } catch { toast('❌ خطا در فعال‌سازی'); }
+}
+
+async function deactivateCombo() {
+  try {
+    const res = await api('deselect_combo');
+    if (res.ok) {
+      toast('❎ کمبو غیرفعال شد');
+      haptic('light');
+      await refreshData();
+      renderCombos();
+      updateComboHeader();
+    } else toast('❌ ' + res.error);
+  } catch { toast('❌ خطا'); }
+}
+
+async function deleteCombo(id, name) {
+  if (!confirm(`آیا از حذف کمبوی «${name}» اطمینان دارید؟`)) return;
+  try {
+    const res = await api('delete_combo', { comboId: id });
+    if (res.ok) {
+      toast('🗑️ کمبو حذف شد');
+      haptic('success');
+      await refreshData();
+      renderCombos();
+      updateComboHeader();
+    } else toast('❌ ' + res.error);
+  } catch { toast('❌ خطا در حذف کمبو'); }
+}
+
+function openAddComboModal() {
+  const providers = state.userData?.providers || [];
+  state.selectedComboProviders = [];
+  const chips = document.getElementById('combo-chips-container');
+  chips.innerHTML = providers.map((p) => `
+    <div class="chip" data-slug="${p.slug}" onclick="toggleComboChip(this, '${p.slug}')">
+      ${providerIcon(p.slug)} ${p.name}
+    </div>
+  `).join('');
+  document.getElementById('combo-name-input').value = '';
+  openModal('modal-add-combo');
+}
+
+function toggleComboChip(el, slug) {
+  if (state.selectedComboProviders.includes(slug)) {
+    state.selectedComboProviders = state.selectedComboProviders.filter((s) => s !== slug);
+    el.classList.remove('selected');
+  } else {
+    state.selectedComboProviders.push(slug);
+    el.classList.add('selected');
+  }
+  haptic('light');
+}
+
+async function submitAddCombo() {
+  const name = document.getElementById('combo-name-input').value.trim();
+  const slugs = state.selectedComboProviders;
+  const routingPolicy = document.getElementById('combo-policy-select').value;
+
+  if (!name) { toast('⚠️ لطفاً نام کمبو را وارد کنید'); return; }
+  if (slugs.length === 0) { toast('⚠️ حداقل یک سرویس‌دهنده را انتخاب کنید'); return; }
+
+  try {
+    const res = await api('create_combo', { name, providerSlugs: slugs, routingPolicy });
+    if (res.ok) {
+      toast('🎉 کمبو با موفقیت ساخته شد!');
+      haptic('success');
+      closeModal('modal-add-combo');
+      await refreshData();
+      renderCombos();
+      updateComboHeader();
+    } else toast('❌ ' + res.error);
+  } catch { toast('❌ خطا در ایجاد کمبو'); }
+}
+
+// ─── Keys Management ──────────────────────────────────────────
+function renderKeys() {
+  const data = state.userData;
+  if (!data) return;
+  const container = document.getElementById('keys-list');
+  const keys = data.keys || [];
+  const providers = data.providers || [];
+
+  const byProv = {};
+  for (const k of keys) {
+    if (!byProv[k.providerSlug]) byProv[k.providerSlug] = [];
+    byProv[k.providerSlug].push(k);
+  }
+
+  let html = `
+    <div class="section-top">
+      <div class="section-title">کلیدهای فعال من (${keys.length})</div>
+      <button class="btn-primary-sm" onclick="openAddKeyModal()">➕ افزودن کلید</button>
+    </div>`;
+
+  if (!keys.length) {
+    html += `
+      <div class="empty-card">
+        <div class="empty-icon">🔑</div>
+        <p>هنوز کلیدی در سیستم ثبت نشده است. با دکمه بالا اولین کلید هوش مصنوعی را اضافه کنید.</p>
+      </div>`;
+  } else {
+    for (const [slug, kList] of Object.entries(byProv)) {
+      const prov = providers.find((p) => p.slug === slug);
+      const provName = prov?.name || slug;
+      html += `<div class="section-title" style="margin-top:8px">${providerIcon(slug)} ${provName}</div>`;
+      const rows = kList.map((k) => `
+        <div class="card-row">
+          <div class="card-icon" style="background:rgba(124,92,252,0.1)">${providerIcon(slug)}</div>
+          <div class="card-text">
+            <div class="card-title">${escHtml(k.label || slug)}</div>
+            <div class="card-sub">
+              ${statusBadge(k.status)}
+              <span style="color:var(--text3)">${fmtTokens(k.totalTokens)} توکن</span>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button class="arrow-btn" onclick="moveKey(${k.id}, 'up')" title="اولویت بالاتر">⬆️</button>
+            <button class="arrow-btn" onclick="moveKey(${k.id}, 'down')" title="اولویت پایین‌تر">⬇️</button>
+            <button class="btn-sm btn-danger" onclick="deleteKey(${k.id})">🗑️</button>
+          </div>
+        </div>`).join('');
+      html += `<div class="card">${rows}</div>`;
+    }
+  }
+  container.innerHTML = html;
+}
+
+function openAddKeyModal() {
+  const providers = state.userData?.providers || [];
+  const select = document.getElementById('key-provider-select');
+  select.innerHTML = providers.map((p) => `<option value="${p.slug}">${providerIcon(p.slug)} ${p.name}</option>`).join('');
+  document.getElementById('key-label-input').value = '';
+  document.getElementById('key-value-input').value = '';
+  openModal('modal-add-key');
+}
+
+async function submitAddKey() {
+  const providerSlug = document.getElementById('key-provider-select').value;
+  const label = document.getElementById('key-label-input').value.trim();
+  const apiKey = document.getElementById('key-value-input').value.trim();
+
+  if (!apiKey || apiKey.length < 8) {
+    toast('⚠️ لطفاً کلید معتبر وارد نمایید');
+    return;
+  }
+
+  try {
+    const res = await api('add_key', { providerSlug, label, apiKey });
+    if (res.ok) {
+      toast('🔐 کلید رمزگذاری و ذخیره شد');
+      haptic('success');
+      closeModal('modal-add-key');
+      await refreshData();
+      renderKeys();
+    } else toast('❌ ' + res.error);
+  } catch { toast('❌ خطا در ذخیره کلید'); }
+}
+
+async function deleteKey(id) {
+  if (!confirm('آیا از حذف این کلید اطمینان دارید؟')) return;
+  try {
+    const res = await api('delete_key', { keyId: id });
+    if (res.ok) {
+      toast('🗑️ کلید حذف شد');
+      haptic('success');
+      await refreshData();
+      renderKeys();
+    } else toast('❌ ' + res.error);
+  } catch { toast('❌ خطا در حذف کلید'); }
+}
+
+async function moveKey(id, dir) {
+  try {
+    const res = await api('move_key', { keyId: id, direction: dir });
+    if (res.ok) {
+      haptic('light');
+      await refreshData();
+      renderKeys();
+    } else toast('❌ ' + res.error);
+  } catch { toast('❌ خطا'); }
+}
+
+// ─── Settings & Analytics ─────────────────────────────────────
+function renderSettings() {
+  const data = state.userData;
+  if (!data) return;
+  const container = document.getElementById('settings-section');
+  const u = data.user;
+  const stats = data.stats;
+  const providers = data.providers || [];
+
+  const keyCountByProv = {};
+  for (const k of (data.keys || [])) {
+    keyCountByProv[k.providerSlug] = (keyCountByProv[k.providerSlug] || 0) + 1;
+  }
+
+  const initial = (u?.name || 'U')[0];
+
+  let html = `
+    <div class="profile-card">
+      <div class="profile-avatar">${initial}</div>
+      <div>
+        <div class="profile-name">${escHtml(u?.name || 'کاربر ۹روتر')}</div>
+        <div class="profile-sub">${u?.username ? '@' + escHtml(u.username) : 'شناسه تلگرام'}</div>
+        <div class="profile-sub" style="margin-top:3px">کد اختصاصی: <code>${u?.tgId || '—'}</code></div>
+      </div>
+    </div>
+
+    <div class="section-title">داشبورد مصرف توکن‌ها</div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">مصرف امروز</div>
+        <div class="stat-value">${fmtTokens(stats?.today)}</div>
+        <div class="stat-sub">توکن پردازش‌شده</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">۷ روز گذشته</div>
+        <div class="stat-value">${fmtTokens(stats?.week)}</div>
+        <div class="stat-sub">توکن پردازش‌شده</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">۳۰ روز گذشته</div>
+        <div class="stat-value">${fmtTokens(stats?.month)}</div>
+        <div class="stat-sub">توکن ماهانه</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">کل مصرف از ابتدا</div>
+        <div class="stat-value">${fmtTokens(stats?.allTime)}</div>
+        <div class="stat-sub">مجموع توکن‌ها</div>
+      </div>
+    </div>`;
+
+  if (stats?.byProvider && Object.keys(stats.byProvider).length) {
+    const rows = Object.entries(stats.byProvider).map(([p, t]) => `
+      <div class="card-row">
+        <div class="card-icon" style="background:rgba(124,92,252,0.1)">${providerIcon(p)}</div>
+        <div class="card-text">
+          <div class="card-title">${p.toUpperCase()}</div>
+          <div class="card-sub">${fmtTokens(t)} توکن مصرفی</div>
+        </div>
+      </div>
+    `).join('');
+    html += `<div class="section-title">تفکیک مصرف سرویس‌دهنده‌ها</div><div class="card">${rows}</div>`;
+  }
+
+  html += `<div class="section-title">سرویس‌دهنده‌های متصل</div>`;
+  const provRows = providers.map((p) => `
+    <div class="card-row">
+      <div class="card-icon" style="background:rgba(${p.isBuiltin ? '59,130,246' : '236,72,153'},0.12)">${providerIcon(p.slug)}</div>
+      <div class="card-text">
+        <div class="card-title">${escHtml(p.name)}</div>
+        <div class="card-sub">
+          ${p.isBuiltin ? '<span class="badge builtin">🏷️ پیش‌فرض</span>' : '<span class="badge custom">🔧 سفارشی</span>'}
+          &nbsp; ${keyCountByProv[p.slug] || 0} کلید فعال
+        </div>
+      </div>
+      ${!p.isBuiltin ? `<button class="btn-sm btn-danger" onclick="deleteProvider(${p.id}, '${escHtml(p.name)}')">🗑️</button>` : ''}
+    </div>
+  `).join('');
+  html += `<div class="card">${provRows}</div>`;
+
+  container.innerHTML = html;
+}
+
+async function deleteProvider(id, name) {
+  if (!confirm(`آیا ارائه‌دهنده «${name}» حذف گردد؟`)) return;
+  try {
+    const res = await api('delete_provider', { providerId: id });
+    if (res.ok) {
+      toast('🗑️ ارائه‌دهنده حذف شد');
+      haptic('success');
+      await refreshData();
+      renderSettings();
+    } else toast('❌ ' + res.error);
+  } catch { toast('❌ خطا در حذف'); }
+}
+
+// ─── Header & Sync ────────────────────────────────────────────
+function updateComboHeader() {
+  const data = state.userData;
+  if (!data) return;
+  const activeId = data.user?.activeComboId;
+  const combo = (data.combos || []).find((c) => c.id === activeId);
+  const el = document.getElementById('active-combo-label');
+  if (combo) {
+    el.innerHTML = `🔀 کمبوی فعال: <b style="color:var(--accent-light)">${escHtml(combo.name)}</b>`;
+  } else {
+    el.innerHTML = `⚠️ کمبویی انتخاب نشده است`;
+  }
+}
+
+async function refreshData() {
+  try {
+    const res = await api('get_data');
+    if (res.ok) state.userData = res;
+  } catch {}
+}
+
+async function startApp() {
+  try {
+    const res = await api('get_data');
+    if (res.ok) {
+      state.userData = res;
+      updateComboHeader();
+    } else {
+      toast('⚠️ دسترسی به داده‌ها: ' + (res.error || ''));
+    }
+  } catch (err) {
+    toast('❌ عدم امکان اتصال به ۹روتر');
+  }
+
+  await loadHistory();
+
+  const loading = document.getElementById('loading');
+  loading.classList.add('hidden');
+  setTimeout(() => loading.remove(), 400);
+}
+
+startApp();
+</script>
+</body>
+</html>

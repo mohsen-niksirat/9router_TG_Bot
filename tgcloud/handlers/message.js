@@ -20,6 +20,7 @@ import {
 import { sendChat, clearHistory } from 'lib/chat';
 import {
   escHtml,
+  buildMiniAppUrl,
   mainMenuKeyboard,
   mainReplyKeyboard,
   keysKeyboard,
@@ -37,7 +38,17 @@ export default async function (message) {
   if (!from || from.is_bot) return;
 
   const { user, isNew } = await getOrCreateUser(from);
-  const text = (message.text || '').trim();
+  const text = (message.text || message.caption || '').trim();
+
+  // Bind Telegram Menu Button directly to Mini App
+  api.setChatMenuButton({
+    chat_id: chat.id,
+    menu_button: {
+      type: 'web_app',
+      text: 'مینی‌اپ چت 🤖',
+      web_app: { url: buildMiniAppUrl(from.id) },
+    },
+  }).catch(() => {});
 
   // ─── Wizard FSM (intercept before commands) ────────────────────────────────
   const wState = user.wizardState || 'idle';
@@ -174,7 +185,7 @@ export default async function (message) {
     await api.sendMessage({
       chat_id: chat.id,
       text: '👇 نوار دسترسی سریع:',
-      reply_markup: mainReplyKeyboard(),
+      reply_markup: mainReplyKeyboard(from.id),
     });
     return;
   }

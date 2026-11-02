@@ -1,5 +1,4 @@
 node_modules/
-.tgcloud/credentials
-.tgcloud/state.json
+.tgcloud/
 .env
 *.local

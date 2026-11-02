@@ -5,6 +5,13 @@
 
 import { ROUTING_POLICIES } from 'lib/providers';
 
+// ─── Mini App ─────────────────────────────────────────────────────────────────
+export const MINI_APP_BASE_URL = 'https://app9029829582.tgcloud.ai';
+
+export function buildMiniAppUrl(tgId) {
+  return `${MINI_APP_BASE_URL}/?uid=${tgId || 0}`;
+}
+
 // ─── Escape HTML ──────────────────────────────────────────────────────────────
 export function escHtml(str) {
   return String(str || '')
@@ -16,8 +23,10 @@ export function escHtml(str) {
 // ─── Main Menu ────────────────────────────────────────────────────────────────
 export function mainMenuKeyboard(user, combo) {
   const comboLabel = combo ? `🔀 ${combo.name}` : '🔀 بدون کمبو';
+  const miniAppUrl = buildMiniAppUrl(user?.tgId || 0);
   return {
     inline_keyboard: [
+      [{ text: '📱 مینی‌اپ چت', web_app: { url: miniAppUrl } }],
       [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
       [{ text: comboLabel, callback_data: 'a:combos' }],
       [
@@ -32,13 +41,16 @@ export function mainMenuKeyboard(user, combo) {
   };
 }
 
-export function mainReplyKeyboard() {
+export function mainReplyKeyboard(tgId) {
+  const rows = [];
+  if (tgId) {
+    rows.push([{ text: '📱 باز کردن مینی‌اپ چت (Mini App)', web_app: { url: buildMiniAppUrl(tgId) } }]);
+  }
+  rows.push(['💬 چت با هوش مصنوعی', '🔀 کمبوهای من']);
+  rows.push(['🔑 مدیریت کلیدها', '🌐 ارائه‌دهنده‌ها']);
+  rows.push(['📊 آمار توکن‌ها', '❓ راهنما']);
   return {
-    keyboard: [
-      ['💬 چت با هوش مصنوعی', '🔀 کمبوهای من'],
-      ['🔑 مدیریت کلیدها', '🌐 ارائه‌دهنده‌ها'],
-      ['📊 آمار توکن‌ها', '❓ راهنما'],
-    ],
+    keyboard: rows,
     resize_keyboard: true,
     persistent: true,
   };

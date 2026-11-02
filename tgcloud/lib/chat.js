@@ -21,14 +21,33 @@ export async function sendChat(dbUser, tgId, userText) {
   // 1. Load history
   const history = await getHistory(dbUser.id);
 
-  // 2. Build messages array
+  // 2. Parse potential image attachments (format: [Image: data:image/...;base64,...])
+  const imgMatch = userText.match(/\[Image: (data:[^\]]+)\]/);
+  const cleanText = userText.replace(/\[Image: data:[^\]]+\]/g, '').trim();
+
+  let userContent = userText;
+  if (imgMatch) {
+    const parts = [];
+    if (cleanText) {
+      parts.push({ type: 'text', text: cleanText });
+    } else {
+      parts.push({ type: 'text', text: 'این تصویر را با دقت بررسی و تحلیل کن.' });
+    }
+    parts.push({
+      type: 'image_url',
+      image_url: { url: imgMatch[1] },
+    });
+    userContent = parts;
+  }
+
+  // 3. Build messages array
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...history,
-    { role: 'user', content: userText },
+    { role: 'user', content: userContent },
   ];
 
-  // 3. Get active combo (or fail gracefully)
+  // 4. Get active combo (or fail gracefully)
   const comboRaw = await getActiveCombo(dbUser);
   const combo = parseCombo(comboRaw);
 
@@ -42,11 +61,11 @@ export async function sendChat(dbUser, tgId, userText) {
     modelOverrides = combo.modelOverrides || {};
   }
 
-  // 4. Fetch provider rows for the selected slugs
+  // 5. Fetch provider rows for the selected slugs
   const allProviders = await getUserProviders(dbUser.id);
   const providerRows = allProviders.filter((p) => providerSlugs.includes(p.slug));
 
-  // 5. Route
+  // 6. Route
   const result = await routeChat({
     userId:       dbUser.id,
     tgId,
@@ -58,8 +77,9 @@ export async function sendChat(dbUser, tgId, userText) {
     maxTokens:    1500,
   });
 
-  // 6. Save to history
-  await appendHistory(dbUser.id, 'user', userText);
+  // 7. Save to history (lightweight representation for images to avoid bloating DB)
+  const historyText = imgMatch ? (cleanText ? `${cleanText} 🖼️` : '🖼️ [تصویر ارسال شد]') : userText;
+  await appendHistory(dbUser.id, 'user', historyText);
   await appendHistory(
     dbUser.id,
     'assistant',
