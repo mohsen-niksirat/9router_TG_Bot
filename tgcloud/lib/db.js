@@ -1,6 +1,6 @@
 import { db } from 'sdk';
 import { eq, and, desc, asc, sql } from 'sdk/db';
-import { users, userProviders, userKeys, combos, chatHistory, tokenUsage } from 'schema';
+import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer } from 'schema';
 import { encryptKey, decryptKey } from 'lib/crypto';
 import { BUILTIN_PROVIDERS } from 'lib/providers';
 
@@ -14,13 +14,33 @@ function parseJson(v, fallback = null) {
 // ─── Users ────────────────────────────────────────────────────────────────────
 
 export async function getOrCreateUser(tgUser) {
-  let user = await db.select().from(users).where(eq(users.tgId, tgUser.id)).get();
-  if (user) return { user, isNew: false };
+  const tgId = Number(tgUser.id);
+  let user = await db.select().from(users).where(eq(users.tgId, tgId)).get();
+  if (user) {
+    // Auto-seed any newly added built-in providers (e.g. Manus AI, FreeAI) for existing users
+    for (const p of BUILTIN_PROVIDERS) {
+      const exists = await db.select().from(userProviders)
+        .where(and(eq(userProviders.userId, user.id), eq(userProviders.slug, p.slug)))
+        .get();
+      if (!exists) {
+        await db.insert(userProviders).values({
+          userId:       user.id,
+          name:         p.name,
+          slug:         p.slug,
+          baseUrl:      p.baseUrl,
+          defaultModel: p.defaultModel,
+          models:       JSON.stringify(p.models),
+          isBuiltin:    1,
+        }).run();
+      }
+    }
+    return { user, isNew: false };
+  }
 
   const [created] = await db
     .insert(users)
     .values({
-      tgId:        tgUser.id,
+      tgId,
       name:        tgUser.first_name || '',
       username:    tgUser.username || '',
       wizardState: 'idle',
@@ -376,4 +396,29 @@ export async function getUsageStats(userId) {
   }
 
   return { today, week, month, allTime, byProvider };
+}
+
+// ─── Media Group Buffer (Multi-Photo Albums) ──────────────────────────────────
+export async function addMediaGroupItem(mediaGroupId, userId, chatId, fileId, caption = '') {
+  const [created] = await db.insert(mediaGroupBuffer).values({
+    mediaGroupId: String(mediaGroupId),
+    userId,
+    chatId,
+    fileId,
+    caption: caption || '',
+  }).returning().run();
+  return created;
+}
+
+export async function getMediaGroupItems(mediaGroupId) {
+  return await db.select().from(mediaGroupBuffer)
+    .where(eq(mediaGroupBuffer.mediaGroupId, String(mediaGroupId)))
+    .orderBy(asc(mediaGroupBuffer.id))
+    .all();
+}
+
+export async function clearMediaGroupItems(mediaGroupId) {
+  await db.delete(mediaGroupBuffer)
+    .where(eq(mediaGroupBuffer.mediaGroupId, String(mediaGroupId)))
+    .run();
 }

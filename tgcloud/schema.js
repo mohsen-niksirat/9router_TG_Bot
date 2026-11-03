@@ -93,3 +93,16 @@ export const tokenUsage = table('token_usage', {
 }, (t) => ({
   userUsageIdx: index('idx_usage_user').on(t.userId, t.createdAt),
 }));
+
+// ─── Media Group Buffer (for Multi-Photo Albums) ─────────────────────────────
+export const mediaGroupBuffer = table('media_group_buffer', {
+  id:           integer('id').primaryKey({ autoIncrement: true }),
+  mediaGroupId: text('media_group_id').notNull(),
+  userId:       integer('user_id').notNull(),
+  chatId:       integer('chat_id').notNull(),
+  fileId:       text('file_id').notNull(),
+  caption:      text('caption'),
+  createdAt:    integer('created_at').default(sql`(unixepoch())`),
+}, (t) => ({
+  mgIdx: index('idx_mg_id').on(t.mediaGroupId),
+}));

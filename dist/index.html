@@ -408,26 +408,33 @@ img { display: block; max-width: 100%; }
   pointer-events: none;
 }
 
-/* Image preview banner above input */
+/* Image preview banner above input (Multi-Image Carousel) */
 #img-preview-bar {
   display: none;
-  padding: 8px 16px;
+  padding: 10px 16px;
   background: var(--bg2);
   border-top: 1px solid var(--border);
 }
 #img-preview-bar.show { display: block; }
-.preview-inner {
-  position: relative;
-  display: inline-block;
+.preview-scroll {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
-.preview-inner img {
-  height: 64px;
-  width: 64px;
+.preview-item {
+  position: relative;
+  flex-shrink: 0;
+}
+.preview-item img {
+  height: 60px;
+  width: 60px;
   object-fit: cover;
   border-radius: 10px;
   border: 2px solid var(--accent);
+  display: block;
 }
-.preview-close {
+.preview-remove {
   position: absolute;
   top: -6px;
   right: -6px;
@@ -437,7 +444,11 @@ img { display: block; max-width: 100%; }
   background: var(--red);
   color: #fff;
   font-size: 11px;
-  display: flex;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
   align-items: center;
   justify-content: center;
   box-shadow: 0 2px 6px rgba(0,0,0,0.3);
@@ -875,12 +886,9 @@ img { display: block; max-width: 100%; }
       <div class="typing-dot"></div>
     </div>
 
-    <!-- Image Attachment Preview Bar -->
+    <!-- Multi-Image Attachment Preview Bar -->
     <div id="img-preview-bar">
-      <div class="preview-inner">
-        <img id="img-preview-tag" src="" alt="preview">
-        <button class="preview-close" id="img-preview-close">✕</button>
-      </div>
+      <div id="img-preview-chips" class="preview-scroll"></div>
     </div>
 
     <!-- Input Footer -->
@@ -891,7 +899,7 @@ img { display: block; max-width: 100%; }
       </div>
       <button class="send-btn" id="send-btn" title="ارسال">➤</button>
     </div>
-    <input type="file" id="file-input" accept="image/*" style="display:none">
+    <input type="file" id="file-input" accept="image/*" multiple style="display:none">
   </div>
 
   <!-- Tab 2: Combos -->
@@ -1040,7 +1048,7 @@ const tg = window.Telegram?.WebApp;
 // ─── App State ────────────────────────────────────────────────
 let state = {
   userData: null,
-  attachedImage: null,
+  attachedImages: [],
   isLoading: false,
   selectedComboProviders: [],
 };
@@ -1165,7 +1173,15 @@ function policyBadge(policy) {
   return `<span class="badge policy">${map[policy] || policy}</span>`;
 }
 function providerIcon(slug) {
-  const icons = { gemini: '✨', groq: '⚡', deepseek: '🌊', openai: '🤖', openrouter: '🔀' };
+  const icons = {
+    gemini: '✨',
+    groq: '⚡',
+    deepseek: '🌊',
+    openai: '🤖',
+    openrouter: '🔀',
+    manus: '🦾',
+    freeai: '🆓',
+  };
   return icons[slug] || '🔧';
 }
 function escHtml(str) {
@@ -1189,16 +1205,37 @@ function renderMessage(role, content, meta = {}) {
   const initial = state.userData?.user?.name?.[0] || 'U';
   const timeStr = new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
 
-  // Extract embedded base64 or link images
-  const imgMatch = content.match(/\[Image: (data:[^\]]+)\]/);
-  const textContent = content.replace(/\[Image: data:[^\]]+\]/g, '').trim();
+  // Extract all embedded images: [Image: data:...]
+  const imgRegex = /\[Image: (data:[^\]]+)\]/g;
+  const imgMatches = Array.from(content.matchAll(imgRegex));
+  let textContent = content.replace(/\[Image: data:[^\]]+\]/g, '').trim();
+
+  // Also extract markdown generated images: ![alt](url)
+  const mdImgRegex = /!\[.*?\]\((https?:\/\/[^\s\)]+)\)/g;
+  const mdMatches = Array.from(textContent.matchAll(mdImgRegex));
+  textContent = textContent.replace(/!\[.*?\]\(https?:\/\/[^\s\)]+\)/g, '').trim();
+
+  const allImages = [
+    ...imgMatches.map((m) => m[1]),
+    ...mdMatches.map((m) => m[1]),
+  ];
+
+  const imagesHtml = allImages.length > 0 ? `
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
+      ${allImages.map((src) => `
+        <a href="${src}" target="_blank" style="display:block">
+          <img src="${src}" alt="تصویر" style="max-height:180px;max-width:240px;border-radius:10px;object-fit:cover;border:1px solid rgba(255,255,255,0.12)">
+        </a>
+      `).join('')}
+    </div>
+  ` : '';
 
   const el = document.createElement('div');
   el.className = `msg-row ${isUser ? 'user' : 'ai'}`;
 
   const bubbleBody = [
     textContent ? `<div>${escHtml(textContent)}</div>` : '',
-    imgMatch ? `<img src="${imgMatch[1]}" alt="تصویر پیوست">` : '',
+    imagesHtml,
   ].join('');
 
   const provBadge = (!isUser && meta.provider)
@@ -1232,18 +1269,18 @@ async function loadHistory() {
 async function sendMessage() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
-  const img = state.attachedImage;
+  const images = state.attachedImages || [];
 
-  if (!text && !img) return;
+  if (!text && images.length === 0) return;
   if (state.isLoading) return;
 
-  let fullMsg = text;
-  if (img) fullMsg = (text ? text + '\n' : '') + `[Image: ${img}]`;
+  const imgTags = images.map((img) => `[Image: ${img}]`).join(' ');
+  const fullMsg = text ? (imgTags ? `${text}\n\n${imgTags}` : text) : imgTags;
 
   renderMessage('user', fullMsg);
   input.value = '';
   input.style.height = '';
-  clearImagePreview();
+  clearAllImagePreviews();
   state.isLoading = true;
   haptic('medium');
 
@@ -1265,6 +1302,14 @@ async function sendMessage() {
     }
   } catch (err) {
     document.getElementById('typing').classList.remove('show');
+    renderMessage('ai', '❌ متأسفانه ارتباط با سرور یا هوش مصنوعی برقرار نشد.');
+    toast('❌ قطع اتصال به سرور');
+    haptic('error');
+  }
+
+  state.isLoading = false;
+  document.getElementById('send-btn').disabled = false;
+}
     renderMessage('ai', '❌ متأسفانه ارتباط با سرور یا هوش مصنوعی برقرار نشد.');
     toast('❌ قطع اتصال به سرور');
     haptic('error');
@@ -1305,29 +1350,58 @@ document.getElementById('new-chat-btn').addEventListener('click', async () => {
   }
 });
 
-// Image Upload
+// ─── Multi-Image Attachment & Preview ─────────────────────────
+function renderImagePreviews() {
+  const bar = document.getElementById('img-preview-bar');
+  const container = document.getElementById('img-preview-chips');
+  if (!state.attachedImages || state.attachedImages.length === 0) {
+    bar.classList.remove('show');
+    container.innerHTML = '';
+    return;
+  }
+  bar.classList.add('show');
+  container.innerHTML = state.attachedImages.map((src, idx) => `
+    <div class="preview-item">
+      <img src="${src}" alt="عکس ${idx + 1}">
+      <div class="preview-remove" onclick="removeAttachedImage(${idx})">✕</div>
+    </div>
+  `).join('');
+}
+
+function removeAttachedImage(idx) {
+  state.attachedImages.splice(idx, 1);
+  renderImagePreviews();
+  haptic('light');
+}
+
+function clearAllImagePreviews() {
+  state.attachedImages = [];
+  renderImagePreviews();
+}
+
 document.getElementById('attach-btn').addEventListener('click', () => {
   document.getElementById('file-input').click();
 });
+
 document.getElementById('file-input').addEventListener('change', function () {
-  const file = this.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    state.attachedImage = e.target.result;
-    document.getElementById('img-preview-tag').src = e.target.result;
-    document.getElementById('img-preview-bar').classList.add('show');
-    haptic('light');
-  };
-  reader.readAsDataURL(file);
+  const files = Array.from(this.files || []);
+  if (files.length === 0) return;
+
+  let loaded = 0;
+  files.forEach((file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      state.attachedImages.push(e.target.result);
+      loaded++;
+      if (loaded === files.length) {
+        renderImagePreviews();
+        haptic('light');
+      }
+    };
+    reader.readAsDataURL(file);
+  });
   this.value = '';
 });
-document.getElementById('img-preview-close').addEventListener('click', clearImagePreview);
-function clearImagePreview() {
-  state.attachedImage = null;
-  document.getElementById('img-preview-bar').classList.remove('show');
-  document.getElementById('img-preview-tag').src = '';
-}
 
 // ─── Combos Management ────────────────────────────────────────
 function renderCombos() {

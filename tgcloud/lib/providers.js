@@ -58,6 +58,30 @@ export const BUILTIN_PROVIDERS = [
       'deepseek/deepseek-chat',
     ],
   },
+  {
+    slug: 'manus',
+    name: 'Manus AI',
+    baseUrl: 'https://api.manus.ai/v1',
+    defaultModel: 'manus-1',
+    models: [
+      'manus-1',
+      'manus-pro',
+      'manus-agent',
+      'manus-vision',
+      'gpt-4o',
+    ],
+  },
+  {
+    slug: 'freeai',
+    name: 'FreeAI',
+    baseUrl: 'https://api.free.ai/v1',
+    defaultModel: 'qwen7b',
+    models: [
+      'qwen7b',
+      'deepseek-r1',
+      'qwen-3.6-35b',
+    ],
+  },
 ];
 
 export const ROUTING_POLICIES = {

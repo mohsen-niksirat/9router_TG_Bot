@@ -17,8 +17,12 @@ import {
   getActiveCombo,
   parseCombo,
   getUsageStats,
+  addMediaGroupItem,
+  getMediaGroupItems,
+  clearMediaGroupItems,
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
+import { uint8ToBase64 } from 'lib/crypto';
 import {
   escHtml,
   buildMiniAppUrl,
@@ -372,7 +376,7 @@ export default async function (message) {
     return;
   }
 
-  // ─── AI Chat (any other text) ─────────────────────────────────────────────
+  // ─── AI Chat (any text or photo) ──────────────────────────────────────────
   const comboRaw = await getActiveCombo(user);
   const combo = parseCombo(comboRaw);
 
@@ -384,12 +388,66 @@ export default async function (message) {
         `برای چت با هوش مصنوعی:\n` +
         `۱. از «🔑 مدیریت کلیدها» کلید API اضافه کن\n` +
         `۲. از «🔀 کمبوهای من» یک کمبو بساز و فعال کن\n` +
-        `۳. پیامت رو بنویس!`,
+        `۳. پیامت رو بنویس یا عکس بفرست!`,
       parse_mode: 'HTML',
       reply_markup: mainMenuKeyboard(user, null),
     });
     return;
   }
+
+  // ─── Multimodal Photos & Media Group (Albums) ─────────────────────────────
+  const photos = message.photo;
+  const isImageDoc = message.document && (message.document.mime_type || '').startsWith('image/');
+  const mgId = message.media_group_id;
+
+  let promptWithImages = text;
+
+  if (photos || isImageDoc) {
+    const fileId = photos ? photos[photos.length - 1].file_id : message.document.file_id;
+
+    if (mgId) {
+      // Album of multiple photos in Telegram
+      await addMediaGroupItem(mgId, user.id, chat.id, fileId, text);
+      // Wait for all album photos to arrive in buffer
+      await new Promise((r) => setTimeout(r, 700));
+
+      const items = await getMediaGroupItems(mgId);
+      // Only the first item coordinates the batch request
+      if (!items || items.length === 0 || items[0].fileId !== fileId) {
+        return;
+      }
+      await clearMediaGroupItems(mgId);
+
+      const imgParts = [];
+      let albumCaption = '';
+      for (const it of items) {
+        if (it.caption && !albumCaption) albumCaption = it.caption;
+        try {
+          const bytes = await api.getFileContent(it.fileId);
+          if (bytes) {
+            imgParts.push(`[Image: data:image/jpeg;base64,${uint8ToBase64(bytes)}]`);
+          }
+        } catch (e) {
+          console.warn('[9Router] Failed to fetch album photo:', e);
+        }
+      }
+
+      promptWithImages = (albumCaption ? `${albumCaption}\n\n` : '') + imgParts.join('\n');
+    } else {
+      // Single photo
+      try {
+        const bytes = await api.getFileContent(fileId);
+        if (bytes) {
+          const imgPart = `[Image: data:image/jpeg;base64,${uint8ToBase64(bytes)}]`;
+          promptWithImages = text ? `${text}\n\n${imgPart}` : imgPart;
+        }
+      } catch (e) {
+        console.warn('[9Router] Failed to fetch single photo:', e);
+      }
+    }
+  }
+
+  if (!promptWithImages) return;
 
   // Show typing... then call AI
   const thinkMsg = await api.sendMessage({
@@ -399,8 +457,33 @@ export default async function (message) {
   });
 
   try {
-    const result = await sendChat(user, from.id, text);
+    const result = await sendChat(user, from.id, promptWithImages);
     const footer = `\n\n<i>—— ${result.provider} / ${result.model}</i>`;
+
+    // Check if AI generated or returned an image URL
+    const imgUrlMatch = result.text.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/) ||
+                        result.text.match(/(https?:\/\/\S+\.(?:png|jpe?g|webp))/i);
+
+    if (imgUrlMatch) {
+      const generatedImageUrl = imgUrlMatch[1];
+      const cleanDesc = result.text.replace(/!\[.*?\]\(https?:\/\/[^\s\)]+\)/g, '').trim();
+      const photoCaption = (cleanDesc.slice(0, 950) + footer).slice(0, 1024);
+
+      try {
+        await api.sendPhoto({
+          chat_id: chat.id,
+          photo: generatedImageUrl,
+          caption: photoCaption,
+          parse_mode: 'HTML',
+          reply_markup: chatActionsKeyboard(),
+        });
+        await api.deleteMessage({ chat_id: chat.id, message_id: thinkMsg.message_id }).catch(() => {});
+        return;
+      } catch (photoErr) {
+        console.warn('[9Router] sendPhoto failed, falling back to text:', photoErr);
+      }
+    }
+
     const fullText = escHtml(result.text) + footer;
 
     await api.editMessageText({

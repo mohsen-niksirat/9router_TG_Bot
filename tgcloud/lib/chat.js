@@ -21,22 +21,31 @@ export async function sendChat(dbUser, tgId, userText) {
   // 1. Load history
   const history = await getHistory(dbUser.id);
 
-  // 2. Parse potential image attachments (format: [Image: data:image/...;base64,...])
-  const imgMatch = userText.match(/\[Image: (data:[^\]]+)\]/);
+  // 2. Parse potential multiple image attachments (format: [Image: data:image/...;base64,...])
+  const imgRegex = /\[Image: (data:[^\]]+)\]/g;
+  const imgMatches = Array.from(userText.matchAll(imgRegex));
   const cleanText = userText.replace(/\[Image: data:[^\]]+\]/g, '').trim();
 
   let userContent = userText;
-  if (imgMatch) {
+  if (imgMatches.length > 0) {
     const parts = [];
     if (cleanText) {
       parts.push({ type: 'text', text: cleanText });
     } else {
-      parts.push({ type: 'text', text: 'این تصویر را با دقت بررسی و تحلیل کن.' });
+      parts.push({
+        type: 'text',
+        text: imgMatches.length > 1
+          ? `این ${imgMatches.length} تصویر پیوست‌شده را با دقت و به تفصیل بررسی و تحلیل کن.`
+          : 'این تصویر را با دقت و به تفصیل بررسی و تحلیل کن.',
+      });
     }
-    parts.push({
-      type: 'image_url',
-      image_url: { url: imgMatch[1] },
-    });
+
+    for (const m of imgMatches) {
+      parts.push({
+        type: 'image_url',
+        image_url: { url: m[1] },
+      });
+    }
     userContent = parts;
   }
 
@@ -78,7 +87,9 @@ export async function sendChat(dbUser, tgId, userText) {
   });
 
   // 7. Save to history (lightweight representation for images to avoid bloating DB)
-  const historyText = imgMatch ? (cleanText ? `${cleanText} 🖼️` : '🖼️ [تصویر ارسال شد]') : userText;
+  const historyText = imgMatches.length > 0
+    ? (cleanText ? `${cleanText} [🖼️ ${imgMatches.length} تصویر]` : `[🖼️ ${imgMatches.length} تصویر پیوست شد]`)
+    : userText;
   await appendHistory(dbUser.id, 'user', historyText);
   await appendHistory(
     dbUser.id,

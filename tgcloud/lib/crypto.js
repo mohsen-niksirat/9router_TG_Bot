@@ -87,3 +87,24 @@ export function maskKey(plaintext) {
   if (!plaintext || plaintext.length < 12) return '••••••••';
   return `${plaintext.slice(0, 6)}••••${plaintext.slice(-4)}`;
 }
+
+/**
+ * Pure-JS Uint8Array to base64 encoder (tgcloud: no btoa/Buffer).
+ */
+export function uint8ToBase64(bytes) {
+  if (!bytes || bytes.length === 0) return '';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let base64 = '';
+  const len = bytes.length;
+  for (let i = 0; i < len; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < len ? bytes[i + 1] : 0;
+    const b2 = i + 2 < len ? bytes[i + 2] : 0;
+    const n = (b0 << 16) | (b1 << 8) | b2;
+    base64 += chars[(n >> 18) & 63];
+    base64 += chars[(n >> 12) & 63];
+    base64 += i + 1 < len ? chars[(n >> 6) & 63] : '=';
+    base64 += i + 2 < len ? chars[n & 63] : '=';
+  }
+  return base64;
+}
