@@ -9,6 +9,7 @@ import {
   addKey,
   getUserProviders,
   getProviderBySlug,
+  getProviderById,
   addCustomProvider,
   updateProviderModels,
   getCombos,
@@ -26,6 +27,7 @@ import {
   keysKeyboard,
   combosKeyboard,
   providersKeyboard,
+  providerDetailKeyboard,
   chatActionsKeyboard,
   backKeyboard,
 } from 'lib/keyboards';
@@ -73,34 +75,64 @@ export default async function (message) {
     if (wState === 'prov:url') {
       const url = text.trim();
       if (!url.startsWith('http')) {
-        await api.sendMessage({ chat_id: chat.id, text: '⚠️ URL باید با http یا https شروع شود.' });
+        await api.sendMessage({ chat_id: chat.id, text: '⚠️ آدرس باید با http:// یا https:// شروع شود.' });
         return;
       }
       const prov = await addCustomProvider(user.id, {
         name: ctx.name || 'ارائه‌دهنده سفارشی',
         baseUrl: url,
+        defaultModel: 'gpt-4o-mini',
+        models: ['gpt-4o-mini'],
       });
-      await clearWizard(from.id);
+
+      // Move directly to Step 3: Models
+      await setWizard(from.id, `prov:models:${prov.id}`, { name: ctx.name, baseUrl: url });
       await api.sendMessage({
         chat_id: chat.id,
-        text: `✅ ارائه‌دهنده <b>${escHtml(ctx.name)}</b> با آدرس <code>${escHtml(url)}</code> ذخیره شد!\n\nحالا می‌توانید کلیدهای این ارائه‌دهنده را از منوی کلیدها اضافه کنید.`,
+        text:
+          `✅ ارائه‌دهنده <b>${escHtml(ctx.name)}</b> با آدرس <code>${escHtml(url)}</code> ثبت شد!\n\n` +
+          `📝 <b>مرحله ۳ از ۳: مدل‌های فعال این ارائه‌دهنده</b>\n\n` +
+          `لطفاً نام مدل‌ها را ارسال فرمایید:\n` +
+          `• می‌توانید در <b>هر سطر نام یک مدل</b> را بنویسید\n` +
+          `• یا با <b>ویرگول (،)</b> نام‌ها را جدا کنید\n\n` +
+          `<i>مثال:</i>\n<code>gpt-4o\ngpt-4o-mini\no1-mini</code>\n\n` +
+          `💡 <i>اولین مدل به عنوان مدل پیش‌فرض انتخاب خواهد شد و سایر مدل‌ها در چرخش یا فالبک پشتیبانی می‌شوند.</i>`,
         parse_mode: 'HTML',
-        reply_markup: backKeyboard('a:providers'),
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⚡ استفاده از مدل پیش‌فرض (gpt-4o-mini)', callback_data: `prov:skip_models:${prov.id}` }],
+            [{ text: '🔙 لغو و بازگشت', callback_data: 'a:providers' }],
+          ],
+        },
       });
       return;
     }
 
-    // ── Add Provider: step 3 — models (optional) ──
+    // ── Add Provider: step 3 — models ──
     if (wState.startsWith('prov:models:')) {
       const provId = parseInt(wState.replace('prov:models:', ''), 10);
-      const models = text.split(/[,،\n]+/).map((s) => s.trim()).filter(Boolean);
-      await updateProviderModels(provId, user.id, models);
+      const models = text.split(/[\r\n,،]+/).map((s) => s.trim()).filter(Boolean);
+      if (models.length === 0) {
+        await api.sendMessage({
+          chat_id: chat.id,
+          text: '⚠️ حداقل نام یک مدل را وارد کنید (یا دکمه استفاده از مدل پیش‌فرض را بزنید).',
+        });
+        return;
+      }
+
+      await updateProviderModels(provId, user.id, models, models[0]);
       await clearWizard(from.id);
+      const prov = await getProviderById(provId, user.id);
+
       await api.sendMessage({
         chat_id: chat.id,
-        text: `✅ مدل‌های ارائه‌دهنده به‌روز شدند:\n<b>${escHtml(models.join(', '))}</b>`,
+        text:
+          `🎉 <b>ارائه‌دهنده «${escHtml(prov?.name || '')}» با موفقیت تکمیل و ثبت شد!</b>\n\n` +
+          `📋 <b>مدل‌های ثبت‌شده (${models.length}):</b>\n<code>${escHtml(models.join('\n'))}</code>\n\n` +
+          `🎯 <b>مدل پیش‌فرض:</b> <code>${escHtml(models[0])}</code>\n\n` +
+          `🔑 اکنون می‌توانید از منوی کلیدها، کلیدهای اختصاصی این ارائه‌دهنده را اضافه کنید.`,
         parse_mode: 'HTML',
-        reply_markup: backKeyboard('a:providers'),
+        reply_markup: providerDetailKeyboard(prov || { id: provId, isBuiltin: 0, defaultModel: models[0] }),
       });
       return;
     }

@@ -997,6 +997,29 @@ img { display: block; max-width: 100%; }
   </div>
 </div>
 
+<!-- Modal 3: Edit Provider Models -->
+<div class="modal-overlay" id="modal-edit-models">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="edit-models-title">✏️ مدیریت مدل‌ها</h3>
+      <button class="icon-btn" onclick="closeModal('modal-edit-models')">✕</button>
+    </div>
+    <input type="hidden" id="edit-models-prov-id">
+    <div class="form-group">
+      <label>نام مدل‌ها (در هر سطر یک مدل بنویسید یا با کاما «،» جدا کنید):</label>
+      <textarea class="form-input ltr" id="edit-models-textarea" rows="4" style="height:auto;resize:vertical" placeholder="gpt-4o&#10;gpt-4o-mini&#10;claude-3-7-sonnet"></textarea>
+      <small style="color:var(--text3);font-size:11.5px">💡 تمامی مدل‌های واردشده در زنجیره فالبک هوشمند قرار می‌گیرند.</small>
+    </div>
+    <div class="form-group">
+      <label>مدل پیش‌فرض (Default Model):</label>
+      <select class="form-select" id="edit-models-default-select"></select>
+    </div>
+    <button class="btn-primary-sm" style="padding:12px;justify-content:center;font-size:14px;border-radius:12px" onclick="submitEditModels()">
+      💾 ذخیره مدل‌ها
+    </button>
+  </div>
+</div>
+
 <script>
 // ─── Environment & Telegram Bridge ────────────────────────────
 const API_BASE = 'https://app9029829582.tgcloud.ai/endpoints/api';
@@ -1569,23 +1592,85 @@ function renderSettings() {
     html += `<div class="section-title">تفکیک مصرف سرویس‌دهنده‌ها</div><div class="card">${rows}</div>`;
   }
 
-  html += `<div class="section-title">سرویس‌دهنده‌های متصل</div>`;
-  const provRows = providers.map((p) => `
+  html += `<div class="section-title">سرویس‌دهنده‌ها و مدل‌های متصل</div>`;
+  const provRows = providers.map((p) => {
+    const modelsCount = (p.models || []).length;
+    return `
     <div class="card-row">
       <div class="card-icon" style="background:rgba(${p.isBuiltin ? '59,130,246' : '236,72,153'},0.12)">${providerIcon(p.slug)}</div>
       <div class="card-text">
         <div class="card-title">${escHtml(p.name)}</div>
         <div class="card-sub">
           ${p.isBuiltin ? '<span class="badge builtin">🏷️ پیش‌فرض</span>' : '<span class="badge custom">🔧 سفارشی</span>'}
-          &nbsp; ${keyCountByProv[p.slug] || 0} کلید فعال
+          <span>🎯 <code>${escHtml(p.defaultModel || 'تعیین‌نشده')}</code></span>
+        </div>
+        <div class="card-sub" style="font-size:11px;color:var(--text3);margin-top:2px">
+          ${modelsCount} مدل ثبت‌شده &bull; ${keyCountByProv[p.slug] || 0} کلید فعال
         </div>
       </div>
-      ${!p.isBuiltin ? `<button class="btn-sm btn-danger" onclick="deleteProvider(${p.id}, '${escHtml(p.name)}')">🗑️</button>` : ''}
+      <div class="card-actions">
+        <button class="btn-sm btn-ghost" onclick="openEditModelsModal(${p.id})">✏️ مدل‌ها</button>
+        ${!p.isBuiltin ? `<button class="btn-sm btn-danger" onclick="deleteProvider(${p.id}, '${escHtml(p.name)}')">🗑️</button>` : ''}
+      </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
   html += `<div class="card">${provRows}</div>`;
 
   container.innerHTML = html;
+}
+
+function openEditModelsModal(provId) {
+  const prov = (state.userData?.providers || []).find((p) => p.id === provId);
+  if (!prov) return;
+
+  document.getElementById('edit-models-prov-id').value = provId;
+  document.getElementById('edit-models-title').innerHTML = `✏️ تنظیم مدل‌های ${escHtml(prov.name)}`;
+
+  const models = prov.models || [];
+  const textarea = document.getElementById('edit-models-textarea');
+  textarea.value = models.join('\n');
+
+  function updateDefaultDropdown() {
+    const lines = textarea.value
+      .split(/[\r\n,،]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const sel = document.getElementById('edit-models-default-select');
+    sel.innerHTML = lines.map((m) => `<option value="${m}" ${m === prov.defaultModel ? 'selected' : ''}>${m}</option>`).join('');
+  }
+
+  updateDefaultDropdown();
+  textarea.oninput = updateDefaultDropdown;
+
+  openModal('modal-edit-models');
+}
+
+async function submitEditModels() {
+  const provId = parseInt(document.getElementById('edit-models-prov-id').value, 10);
+  const text = document.getElementById('edit-models-textarea').value;
+  const models = text.split(/[\r\n,،]+/).map((s) => s.trim()).filter(Boolean);
+  const defaultModel = document.getElementById('edit-models-default-select').value || models[0];
+
+  if (models.length === 0) {
+    toast('⚠️ لطفاً حداقل نام یک مدل را بنویسید');
+    return;
+  }
+
+  try {
+    const res = await api('update_provider_models', { providerId: provId, models, defaultModel });
+    if (res.ok) {
+      toast('✅ مدل‌های ارائه‌دهنده با موفقیت ذخیره شدند');
+      haptic('success');
+      closeModal('modal-edit-models');
+      await refreshData();
+      renderSettings();
+    } else {
+      toast('❌ ' + res.error);
+    }
+  } catch {
+    toast('❌ خطا در ذخیره مدل‌ها');
+  }
 }
 
 async function deleteProvider(id, name) {

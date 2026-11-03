@@ -128,11 +128,24 @@ export function providersKeyboard(providers) {
 
 export function providerDetailKeyboard(prov) {
   const rows = [];
+  rows.push([{ text: '🎯 انتخاب مدل پیش‌فرض', callback_data: `p:defm:${prov.id}` }]);
+  rows.push([{ text: '✏️ ویرایش / افزودن مدل‌ها', callback_data: `p:models:${prov.id}` }]);
   if (!prov.isBuiltin) {
     rows.push([{ text: '🗑️ حذف این ارائه‌دهنده', callback_data: `p:del:${prov.id}` }]);
   }
-  rows.push([{ text: '✏️ ویرایش مدل‌ها', callback_data: `p:models:${prov.id}` }]);
-  rows.push([{ text: '🔙 بازگشت', callback_data: 'a:providers' }]);
+  rows.push([{ text: '🔙 بازگشت به ارائه‌دهنده‌ها', callback_data: 'a:providers' }]);
+  return { inline_keyboard: rows };
+}
+
+export function providerModelPickerKeyboard(prov, models) {
+  const rows = models.map((m) => {
+    const isDef = m === prov.defaultModel ? '✅ ' : '';
+    return [{
+      text: `${isDef}${m}`,
+      callback_data: `p:setdefm:${prov.id}:${m}`.slice(0, 64),
+    }];
+  });
+  rows.push([{ text: '🔙 بازگشت', callback_data: `p:view:${prov.id}` }]);
   return { inline_keyboard: rows };
 }
 
@@ -154,10 +167,10 @@ export function comboDetailKeyboard(combo, isActive) {
   } else {
     rows.push([{ text: '❎ غیرفعال کردن (بدون کمبو)', callback_data: 'c:deselect' }]);
   }
-  rows.push([{ text: '✏️ ویرایش پرووایدرها', callback_data: `c:editprov:${combo.id}` }]);
+  rows.push([{ text: '✏️ ویرایش ارائه‌دهنده‌ها', callback_data: `c:editprov:${combo.id}` }]);
   rows.push([{ text: '🔄 تغییر سیاست مسیریابی', callback_data: `c:policy:${combo.id}` }]);
   rows.push([{ text: '🗑️ حذف این کمبو', callback_data: `c:del:${combo.id}` }]);
-  rows.push([{ text: '🔙 بازگشت', callback_data: 'a:combos' }]);
+  rows.push([{ text: '🔙 بازگشت به کمبوها', callback_data: 'a:combos' }]);
   return { inline_keyboard: rows };
 }
 
@@ -169,6 +182,7 @@ export function routingPolicyKeyboard(comboId) {
   return { inline_keyboard: rows };
 }
 
+// For editing an existing combo
 export function comboProviderPickerKeyboard(providers, selected, comboId) {
   const rows = providers.map((p) => {
     const checked = selected.includes(p.slug) ? '✅ ' : '';
@@ -177,8 +191,22 @@ export function comboProviderPickerKeyboard(providers, selected, comboId) {
       callback_data: `c:togprov:${comboId}:${p.slug}`.slice(0, 64),
     }];
   });
-  rows.push([{ text: '💾 ذخیره', callback_data: `c:saveprov:${comboId}` }]);
-  rows.push([{ text: '🔙 لغو', callback_data: `c:view:${comboId}` }]);
+  rows.push([{ text: '💾 ذخیره تغییرات', callback_data: `c:saveprov:${comboId}` }]);
+  rows.push([{ text: '🔙 بازگشت', callback_data: `c:view:${comboId}` }]);
+  return { inline_keyboard: rows };
+}
+
+// For creating a NEW combo during wizard
+export function wizardComboProviderPickerKeyboard(providers, selected) {
+  const rows = providers.map((p) => {
+    const checked = selected.includes(p.slug) ? '✅ ' : '';
+    return [{
+      text: `${checked}${p.name}`,
+      callback_data: `wiz:togprov:${p.slug}`.slice(0, 64),
+    }];
+  });
+  rows.push([{ text: '💾 ذخیره و ساخت کمبو', callback_data: 'wiz:saveprov' }]);
+  rows.push([{ text: '🔙 لغو', callback_data: 'wiz:cancel' }]);
   return { inline_keyboard: rows };
 }
 

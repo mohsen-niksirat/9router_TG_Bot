@@ -99,10 +99,26 @@ export async function addCustomProvider(userId, { name, baseUrl, defaultModel = 
   return created;
 }
 
+export async function getProviderById(id, userId) {
+  return await db.select().from(userProviders)
+    .where(and(eq(userProviders.id, id), eq(userProviders.userId, userId)))
+    .get() || null;
+}
+
 export async function updateProviderModels(id, userId, models, defaultModel = null) {
+  const patch = {
+    models: JSON.stringify(models),
+  };
+  if (defaultModel) patch.defaultModel = defaultModel;
+  else if (models && models.length > 0) patch.defaultModel = models[0];
+
+  await db.update(userProviders).set(patch)
+    .where(and(eq(userProviders.id, id), eq(userProviders.userId, userId))).run();
+}
+
+export async function updateProviderDefaultModel(id, userId, defaultModel) {
   await db.update(userProviders).set({
-    models:       JSON.stringify(models),
-    defaultModel: defaultModel || models[0] || null,
+    defaultModel,
   }).where(and(eq(userProviders.id, id), eq(userProviders.userId, userId))).run();
 }
 

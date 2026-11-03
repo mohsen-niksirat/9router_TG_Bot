@@ -17,6 +17,7 @@ import {
   moveKeyPriority,
   getUserProviders,
   addCustomProvider,
+  updateProviderModels,
   deleteCustomProvider,
   getCombos,
   getComboById,
@@ -283,6 +284,25 @@ export default async function (input, ctx) {
       models,
     });
     return { ok: true, provider: created };
+  }
+
+  // ─── update_provider_models ─────────────────────────────────────────────────
+  if (action === 'update_provider_models') {
+    const provId = parseInt(input.providerId || input.id, 10);
+    const modelsRaw = input.models;
+    let models = [];
+    if (Array.isArray(modelsRaw)) {
+      models = modelsRaw.map((s) => String(s).trim()).filter(Boolean);
+    } else if (typeof modelsRaw === 'string') {
+      models = modelsRaw.split(/[\r\n,،]+/).map((s) => s.trim()).filter(Boolean);
+    }
+    const defaultModel = input.defaultModel || (models[0] || null);
+
+    if (!provId) return { ok: false, error: 'شناسه ارائه‌دهنده الزامی است.' };
+    if (models.length === 0) return { ok: false, error: 'حداقل یک مدل باید وارد شود.' };
+
+    await updateProviderModels(provId, user.id, models, defaultModel);
+    return { ok: true, models, defaultModel };
   }
 
   // ─── delete_provider ────────────────────────────────────────────────────────

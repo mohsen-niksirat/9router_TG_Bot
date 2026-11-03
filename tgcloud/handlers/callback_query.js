@@ -12,6 +12,9 @@ import {
   moveKeyPriority,
   getUserProviders,
   getProviderBySlug,
+  getProviderById,
+  updateProviderModels,
+  updateProviderDefaultModel,
   addCustomProvider,
   deleteCustomProvider,
   getCombos,
@@ -36,10 +39,12 @@ import {
   providerPickerForKey,
   providersKeyboard,
   providerDetailKeyboard,
+  providerModelPickerKeyboard,
   combosKeyboard,
   comboDetailKeyboard,
   routingPolicyKeyboard,
   comboProviderPickerKeyboard,
+  wizardComboProviderPickerKeyboard,
   chatActionsKeyboard,
   backKeyboard,
 } from 'lib/keyboards';
@@ -238,20 +243,67 @@ export default async function (query) {
 
   if (data.startsWith('p:view:')) {
     const provId = parseInt(data.replace('p:view:', ''), 10);
-    const providers = await getUserProviders(user.id);
-    const prov = providers.find((p) => p.id === provId);
+    const prov = await getProviderById(provId, user.id);
     if (!prov) { await edit('❌ ارائه‌دهنده یافت نشد.', backKeyboard('a:providers')); return; }
 
     const models = (() => {
       try { return JSON.parse(prov.models || '[]'); } catch { return []; }
     })();
 
+    const modelsListStr = models.length > 0 ? models.map((m) => `• <code>${escHtml(m)}</code>`).join('\n') : '<i>مدلی تعریف نشده است</i>';
+
     await edit(
       `🌐 <b>${escHtml(prov.name)}</b>\n\n` +
-      `Slug: <code>${escHtml(prov.slug)}</code>\n` +
-      `Base URL: <code>${escHtml(prov.baseUrl)}</code>\n` +
-      `مدل پیش‌فرض: <code>${escHtml(prov.defaultModel || '—')}</code>\n` +
-      `مدل‌ها: <code>${escHtml(models.join(', ') || '—')}</code>`,
+      `🏷️ شناسه: <code>${escHtml(prov.slug)}</code>\n` +
+      `🔗 آدرس: <code>${escHtml(prov.baseUrl)}</code>\n` +
+      `🎯 <b>مدل پیش‌فرض:</b> <code>${escHtml(prov.defaultModel || 'تعیین‌نشده')}</code>\n\n` +
+      `📋 <b>مدل‌های ثبت‌شده:</b>\n${modelsListStr}\n\n` +
+      `💡 با دکمه‌های زیر می‌توانید مدل‌های جدید اضافه کنید یا مدل پیش‌فرض را تغییر دهید.`,
+      providerDetailKeyboard(prov)
+    );
+    return;
+  }
+
+  // Pick default model for provider
+  if (data.startsWith('p:defm:')) {
+    const provId = parseInt(data.replace('p:defm:', ''), 10);
+    const prov = await getProviderById(provId, user.id);
+    if (!prov) { await edit('❌ ارائه‌دهنده یافت نشد.', backKeyboard('a:providers')); return; }
+    let models = [];
+    try { models = JSON.parse(prov.models || '[]'); } catch {}
+    if (models.length === 0) {
+      await api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: '⚠️ ابتدا با دکمه «ویرایش مدل‌ها» نام مدل‌ها را اضافه کنید!',
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+    await edit(
+      `🎯 <b>انتخاب مدل پیش‌فرض برای ${escHtml(prov.name)}</b>\n\n` +
+      `مدل پیش‌فرض فعلی: <code>${escHtml(prov.defaultModel || 'تعیین‌نشده')}</code>\n\n` +
+      `مدلی که مایلید به صورت پیش‌فرض فراخوانی شود را انتخاب فرمایید:`,
+      providerModelPickerKeyboard(prov, models)
+    );
+    return;
+  }
+
+  // Set default model for provider
+  if (data.startsWith('p:setdefm:')) {
+    const rest = data.replace('p:setdefm:', '');
+    const colonIdx = rest.indexOf(':');
+    const provId = parseInt(rest.slice(0, colonIdx), 10);
+    const model = rest.slice(colonIdx + 1);
+    await updateProviderDefaultModel(provId, user.id, model);
+    const prov = await getProviderById(provId, user.id);
+    await api.answerCallbackQuery({
+      callback_query_id: query.id,
+      text: `✅ مدل پیش‌فرض روی ${model} تنظیم شد`,
+    }).catch(() => {});
+    await edit(
+      `✅ <b>مدل پیش‌فرض ارائه‌دهنده با موفقیت تغییر یافت!</b>\n\n` +
+      `🌐 ارائه‌دهنده: <b>${escHtml(prov.name)}</b>\n` +
+      `🎯 مدل پیش‌فرض جدید: <code>${escHtml(model)}</code>`,
       providerDetailKeyboard(prov)
     );
     return;
@@ -260,17 +312,39 @@ export default async function (query) {
   if (data === 'p:add') {
     await setWizard(from.id, 'prov:name');
     await edit(
-      '🌐 <b>افزودن ارائه‌دهنده سفارشی</b>\n\nلطفاً <b>نام</b> ارائه‌دهنده را بنویسید:\n<i>مثال: Avalai, DeepInfra, ...</i>',
+      '🌐 <b>افزودن ارائه‌دهنده سفارشی</b>\n\n' +
+      'مرحله ۱ از ۳: لطفاً <b>نام ارائه‌دهنده</b> را بنویسید:\n' +
+      '<i>مثال: AvalAI, DeepInfra, freeai, ...</i>',
       backKeyboard('a:providers')
+    );
+    return;
+  }
+
+  // Skip adding custom models and use default
+  if (data.startsWith('prov:skip_models:')) {
+    const provId = parseInt(data.replace('prov:skip_models:', ''), 10);
+    await clearWizard(from.id);
+    const prov = await getProviderById(provId, user.id);
+    await edit(
+      `✅ ارائه‌دهنده <b>${escHtml(prov?.name || 'سفارشی')}</b> با مدل پیش‌فرض <code>gpt-4o-mini</code> آماده شد!\n\n` +
+      `اکنون می‌توانید کلیدهای این سرویس‌دهنده را از بخش «کلیدها» اضافه فرمایید.`,
+      prov ? providerDetailKeyboard(prov) : backKeyboard('a:providers')
     );
     return;
   }
 
   if (data.startsWith('p:models:')) {
     const provId = parseInt(data.replace('p:models:', ''), 10);
+    const prov = await getProviderById(provId, user.id);
     await setWizard(from.id, `prov:models:${provId}`);
     await edit(
-      `✏️ <b>ویرایش مدل‌ها</b>\n\nلیست مدل‌ها را با کاما یا خط جدید جدا کرده بفرست:\n<i>مثال: gpt-4o, gpt-4o-mini, o1-mini</i>`,
+      `✏️ <b>ویرایش و افزودن مدل‌ها برای ${escHtml(prov?.name || '')}</b>\n\n` +
+      `لطفاً نام مدل‌ها را به یکی از روش‌های زیر ارسال فرمایید:\n` +
+      `• در هر سطر یک مدل بنویسید\n` +
+      `• یا با ویرگول (،) نام‌ها را از هم جدا کنید\n\n` +
+      `<i>مثال:</i>\n` +
+      `<code>gpt-4o\ngpt-4o-mini\nclaude-3-7-sonnet</code>\n\n` +
+      `💡 اولین مدل ارسالی به طور خودکار به عنوان مدل پیش‌فرض در نظر گرفته می‌شود.`,
       backKeyboard(`p:view:${provId}`)
     );
     return;
@@ -303,6 +377,10 @@ export default async function (query) {
 
   if (data.startsWith('c:view:')) {
     const comboId = parseInt(data.replace('c:view:', ''), 10);
+    if (!comboId || isNaN(comboId)) {
+      await edit('❌ شناسه کمبو نامعتبر است.', backKeyboard('a:combos'));
+      return;
+    }
     const combo = await getComboById(comboId, user.id);
     if (!combo) { await edit('❌ کمبو یافت نشد.', backKeyboard('a:combos')); return; }
     const parsed = parseCombo(combo);
@@ -310,7 +388,7 @@ export default async function (query) {
     const policy = ROUTING_POLICIES[parsed.routingPolicy] || { name: parsed.routingPolicy };
 
     await edit(
-      `🔀 <b>${escHtml(parsed.name)}</b> ${isActive ? '✅' : ''}\n\n` +
+      `🔀 <b>${escHtml(parsed.name)}</b> ${isActive ? '✅ (فعال)' : ''}\n\n` +
       `ارائه‌دهنده‌ها: <code>${escHtml(parsed.providerSlugs.join(' → '))}</code>\n` +
       `سیاست: <b>${policy.name}</b>\n` +
       `<i>${policy.desc || ''}</i>`,
@@ -325,7 +403,6 @@ export default async function (query) {
     const combo = await getComboById(comboId, user.id);
     if (!combo) { await edit('❌ کمبو یافت نشد.', backKeyboard('a:combos')); return; }
     await updateUser(from.id, { activeComboId: comboId });
-    const updatedUser = await getUser(from.id);
     const comboList = await getCombos(user.id);
     await edit(
       `✅ کمبوی <b>${escHtml(combo.name)}</b> فعال شد!\n\nحالا هر پیامی که بفرستی، از این کمبو استفاده می‌کنه.`,
@@ -354,7 +431,7 @@ export default async function (query) {
     return;
   }
 
-  // Edit providers in combo
+  // Edit providers in existing combo
   if (data.startsWith('c:editprov:')) {
     const comboId = parseInt(data.replace('c:editprov:', ''), 10);
     const combo = await getComboById(comboId, user.id);
@@ -362,13 +439,15 @@ export default async function (query) {
     const parsed = parseCombo(combo);
     const providers = await getUserProviders(user.id);
     await edit(
-      `✏️ <b>ویرایش ارائه‌دهنده‌های کمبو</b>\n\nفعلاً: <code>${escHtml(parsed.providerSlugs.join(', '))}</code>\n\nارائه‌دهنده‌ها را تیک بزن یا بردار:`,
+      `✏️ <b>ویرایش ارائه‌دهنده‌های کمبو: ${escHtml(parsed.name)}</b>\n\n` +
+      `فعلاً: <code>${escHtml(parsed.providerSlugs.join(', '))}</code>\n\n` +
+      `ارائه‌دهنده‌ها را تیک بزن یا بردار و سپس دکمه ذخیره را بزن:`,
       comboProviderPickerKeyboard(providers, parsed.providerSlugs, comboId)
     );
     return;
   }
 
-  // Toggle provider in combo edit
+  // Toggle provider in existing combo
   if (data.startsWith('c:togprov:')) {
     const parts = data.replace('c:togprov:', '').split(':');
     const comboId = parseInt(parts[0], 10);
@@ -392,12 +471,12 @@ export default async function (query) {
     return;
   }
 
-  // Save providers in combo
+  // Save providers in existing combo
   if (data.startsWith('c:saveprov:')) {
     const comboId = parseInt(data.replace('c:saveprov:', ''), 10);
     const combo = await getComboById(comboId, user.id);
     await edit(
-      `✅ ارائه‌دهنده‌های کمبو ذخیره شدند.`,
+      `✅ ارائه‌دهنده‌های کمبو با موفقیت ذخیره شدند.`,
       comboDetailKeyboard(parseCombo(combo), user.activeComboId === comboId)
     );
     return;
@@ -427,7 +506,7 @@ export default async function (query) {
     return;
   }
 
-  // ─── Create Combo wizard (callback portion: policy selection) ───────────────
+  // ─── Create Combo wizard ──────────────────────────────────────────────────
   if (data === 'c:create') {
     await clearWizard(from.id);
     await setWizard(from.id, 'combo:name', { providerSlugs: [] });
@@ -438,27 +517,24 @@ export default async function (query) {
     return;
   }
 
-  // Wizard: combo policy selected via button
+  // Wizard Step 2: Policy picked
   if (data.startsWith('wiz:combo:pol:')) {
     const policy = data.replace('wiz:combo:pol:', '');
     const ctx = parseWizardData(user);
-
     const providers = await getUserProviders(user.id);
     await setWizard(from.id, 'combo:pickprov', { ...ctx, policy, providerSlugs: ctx.providerSlugs || [] });
 
     await edit(
       `✅ سیاست: <b>${ROUTING_POLICIES[policy]?.name || policy}</b>\n\n` +
-      `حالا ارائه‌دهنده‌هایی که می‌خوای در این کمبو باشن رو انتخاب کن:`,
-      comboProviderPickerKeyboard(providers, ctx.providerSlugs || [], `new_${policy}`)
+      `حالا ارائه‌دهنده‌هایی که می‌خوای در این کمبو باشن رو انتخاب کن (روی هر دکمه بزن تا تیک بخوره):`,
+      wizardComboProviderPickerKeyboard(providers, ctx.providerSlugs || [])
     );
     return;
   }
 
-  // Wizard: toggle provider during combo creation
-  if (data.startsWith('c:togprov:new_')) {
-    const parts = data.replace('c:togprov:new_', '').split(':');
-    const policy = parts[0];
-    const slug = parts.slice(1).join(':');
+  // Wizard Step 3: Toggle provider in new combo
+  if (data.startsWith('wiz:togprov:')) {
+    const slug = data.replace('wiz:togprov:', '');
     const ctx = parseWizardData(user);
     let slugs = ctx.providerSlugs || [];
     if (slugs.includes(slug)) {
@@ -466,31 +542,33 @@ export default async function (query) {
     } else {
       slugs = [...slugs, slug];
     }
-    await setWizard(from.id, user.wizardState, { ...ctx, providerSlugs: slugs });
+    await setWizard(from.id, 'combo:pickprov', { ...ctx, providerSlugs: slugs });
     const providers = await getUserProviders(user.id);
     await api.editMessageReplyMarkup({
       chat_id: chatId,
       message_id: messageId,
-      reply_markup: comboProviderPickerKeyboard(providers, slugs, `new_${policy}`),
+      reply_markup: wizardComboProviderPickerKeyboard(providers, slugs),
     }).catch(() => {});
     return;
   }
 
-  // Wizard: save new combo
-  if (data.startsWith('c:saveprov:new_')) {
-    const policy = data.replace('c:saveprov:new_', '');
+  // Wizard Step 4: Save new combo
+  if (data === 'wiz:saveprov') {
     const ctx = parseWizardData(user);
     const slugs = ctx.providerSlugs || [];
+    const policy = ctx.policy || 'fallback';
 
     if (slugs.length === 0) {
-      await edit('⚠️ حداقل یک ارائه‌دهنده را انتخاب کن!',
-        comboProviderPickerKeyboard(await getUserProviders(user.id), [], `new_${policy}`)
-      );
+      await api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: '⚠️ حداقل یک ارائه‌دهنده را برای کمبو انتخاب کنید!',
+        show_alert: true,
+      }).catch(() => {});
       return;
     }
 
     const combo = await createCombo(user.id, {
-      name:          ctx.name || 'کمبوی جدید',
+      name: ctx.name || 'کمبوی جدید',
       providerSlugs: slugs,
       routingPolicy: policy,
     });
@@ -505,12 +583,20 @@ export default async function (query) {
     const comboList = await getCombos(user.id);
     const updatedUser = await getUser(from.id);
     await edit(
-      `✅ کمبوی <b>${escHtml(combo.name)}</b> ساخته شد!\n\n` +
-      `ارائه‌دهنده‌ها: <code>${escHtml(slugs.join(' → '))}</code>\n` +
-      `سیاست: <b>${ROUTING_POLICIES[policy]?.name || policy}</b>` +
-      (updatedUser.activeComboId === combo.id ? '\n\n🎯 این کمبو فعال شد!' : ''),
+      `🎉 <b>کمبوی «${escHtml(combo.name)}» با موفقیت ساخته شد!</b>\n\n` +
+      `🌐 ارائه‌دهنده‌ها: <code>${escHtml(slugs.join(' → '))}</code>\n` +
+      `🔄 سیاست مسیریابی: <b>${ROUTING_POLICIES[policy]?.name || policy}</b>` +
+      (updatedUser.activeComboId === combo.id ? '\n\n🎯 <b>این کمبو بلافاصله به عنوان کمبوی فعال تنظیم شد!</b>' : ''),
       combosKeyboard(comboList, updatedUser.activeComboId)
     );
+    return;
+  }
+
+  // Wizard Cancel
+  if (data === 'wiz:cancel') {
+    await clearWizard(from.id);
+    const comboList = await getCombos(user.id);
+    await edit('❌ عملیات ساخت کمبو لغو شد.', combosKeyboard(comboList, user.activeComboId));
     return;
   }
 }

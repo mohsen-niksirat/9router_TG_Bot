@@ -198,35 +198,57 @@ export async function routeChat({
 
       const plainKey = decryptKey(keyRow.apiKeyEnc, tgId);
 
-      // Resolve model: override → provider default → fallback
+      // Resolve candidate models: override → provider default → provider's registered models → fallback
       const provRow = providerRows.find((p) => p.slug === slug);
-      const model = modelOverrides[slug] || provRow?.defaultModel || 'gpt-4o-mini';
+      let provModels = [];
+      try { provModels = JSON.parse(provRow?.models || '[]'); } catch {}
 
-      try {
-        let result;
-        if (slug === 'gemini') {
-          result = await callGemini(plainKey, model, messages, maxTokens);
-        } else {
-          const baseUrl = provRow?.baseUrl || 'https://api.openai.com/v1';
-          result = await callOpenAICompat(baseUrl, plainKey, model, messages, maxTokens);
-        }
+      const candidateModels = [
+        modelOverrides[slug],
+        provRow?.defaultModel,
+        ...provModels,
+        slug === 'gemini' ? 'gemini-2.5-flash-lite' : 'gpt-4o-mini',
+      ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
-        if (result && result.text) {
-          await markKeyResult(keyRow.id, true);
-          await recordUsage({
-            userId,
-            keyId:            keyRow.id,
-            provider:         slug,
-            model,
-            promptTokens:     result.promptTokens,
-            completionTokens: result.completionTokens,
-          }).catch(() => {});
-          return { text: result.text, provider: slug, model, usage: result };
+      let keySucceeded = false;
+      for (const model of candidateModels) {
+        try {
+          let result;
+          if (slug === 'gemini') {
+            result = await callGemini(plainKey, model, messages, maxTokens);
+          } else {
+            const baseUrl = provRow?.baseUrl || 'https://api.openai.com/v1';
+            result = await callOpenAICompat(baseUrl, plainKey, model, messages, maxTokens);
+          }
+
+          if (result && result.text) {
+            keySucceeded = true;
+            await markKeyResult(keyRow.id, true);
+            await recordUsage({
+              userId,
+              keyId:            keyRow.id,
+              provider:         slug,
+              model,
+              promptTokens:     result.promptTokens,
+              completionTokens: result.completionTokens,
+            }).catch(() => {});
+            return { text: result.text, provider: slug, model, usage: result };
+          }
+        } catch (err) {
+          lastError = err;
+          // If model not found (404), fall back to the next registered model for this provider!
+          if (err.status === 404) {
+            console.warn(`[9Router] Model ${model} returned 404 for ${slug}, trying next model in chain...`);
+            continue;
+          }
+          // Auth (401/403) or Rate Limit (429): break model loop to trigger key failover
+          break;
         }
-      } catch (err) {
-        lastError = err;
-        await markKeyResult(keyRow.id, false, err.status || 500);
-        console.warn(`[9Router] ${slug} key #${keyRow.id} failed:`, err.message);
+      }
+
+      if (!keySucceeded) {
+        await markKeyResult(keyRow.id, false, lastError?.status || 500);
+        console.warn(`[9Router] ${slug} key #${keyRow.id} failed:`, lastError?.message);
       }
     }
   }
