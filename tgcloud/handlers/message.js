@@ -55,7 +55,22 @@ export default async function (message) {
   // ─── Wizard FSM (intercept before commands) ────────────────────────────────
   const wState = user.wizardState || 'idle';
 
-  if (wState !== 'idle' && text !== '/cancel' && !text.startsWith('/start')) {
+  const isNavText = text.startsWith('/') || [
+    '🌐 ارائه‌دهنده‌ها',
+    '🔑 مدیریت کلیدها',
+    '🔀 کمبوهای من',
+    '💬 چت با هوش مصنوعی',
+    '📊 آمار توکن‌ها',
+    '❓ راهنما',
+    '❌ لغو',
+    '🔙 بازگشت',
+  ].includes(text);
+
+  if (isNavText && wState !== 'idle') {
+    await clearWizard(from.id);
+  }
+
+  if (wState !== 'idle' && !isNavText) {
     const ctx = parseWizardData(user);
 
     // ── Add Provider: step 1 — name ──
@@ -108,31 +123,51 @@ export default async function (message) {
       return;
     }
 
-    // ── Add Provider: step 3 — models ──
-    if (wState.startsWith('prov:models:')) {
-      const provId = parseInt(wState.replace('prov:models:', ''), 10);
-      const models = text.split(/[\r\n,،]+/).map((s) => s.trim()).filter(Boolean);
-      if (models.length === 0) {
+    // ── Add / Append Provider Models ──
+    if (wState.startsWith('prov:models_add:') || wState.startsWith('prov:models:')) {
+      const isAppend = wState.startsWith('prov:models_add:');
+      const provId = parseInt(wState.replace(/prov:models(_add)?:/, ''), 10);
+      const prov = await getProviderById(provId, user.id);
+      if (!prov) {
+        await clearWizard(from.id);
+        await api.sendMessage({ chat_id: chat.id, text: '❌ ارائه‌دهنده یافت نشد.' });
+        return;
+      }
+
+      const inputModels = text.split(/[\r\n,،]+/).map((s) => s.trim()).filter(Boolean);
+      if (inputModels.length === 0) {
         await api.sendMessage({
           chat_id: chat.id,
-          text: '⚠️ حداقل نام یک مدل را وارد کنید (یا دکمه استفاده از مدل پیش‌فرض را بزنید).',
+          text: '⚠️ حداقل نام یک مدل را وارد کنید.',
         });
         return;
       }
 
-      await updateProviderModels(provId, user.id, models, models[0]);
+      let existingModels = [];
+      try { existingModels = JSON.parse(prov.models || '[]'); } catch {}
+
+      // If appending, combine unique models
+      let finalModels = isAppend
+        ? Array.from(new Set([...existingModels, ...inputModels]))
+        : inputModels;
+
+      const defaultModel = prov.defaultModel && finalModels.includes(prov.defaultModel)
+        ? prov.defaultModel
+        : finalModels[0];
+
+      await updateProviderModels(provId, user.id, finalModels, defaultModel);
       await clearWizard(from.id);
-      const prov = await getProviderById(provId, user.id);
+      const updatedProv = await getProviderById(provId, user.id);
 
       await api.sendMessage({
         chat_id: chat.id,
         text:
-          `🎉 <b>ارائه‌دهنده «${escHtml(prov?.name || '')}» با موفقیت تکمیل و ثبت شد!</b>\n\n` +
-          `📋 <b>مدل‌های ثبت‌شده (${models.length}):</b>\n<code>${escHtml(models.join('\n'))}</code>\n\n` +
-          `🎯 <b>مدل پیش‌فرض:</b> <code>${escHtml(models[0])}</code>\n\n` +
-          `🔑 اکنون می‌توانید از منوی کلیدها، کلیدهای اختصاصی این ارائه‌دهنده را اضافه کنید.`,
+          `🎉 <b>مدل‌های ارائه‌دهنده «${escHtml(updatedProv.name)}» با موفقیت ذخیره شدند!</b>\n\n` +
+          `📋 <b>تعداد کل مدل‌ها:</b> <code>${finalModels.length}</code>\n` +
+          `🎯 <b>مدل پیش‌فرض:</b> <code>${escHtml(defaultModel)}</code>\n\n` +
+          `💡 <i>با کلیک روی دکمه‌های شیشه‌ای زیر، می‌توانید مدل پیش‌فرض را مستقیماً تغییر دهید:</i>`,
         parse_mode: 'HTML',
-        reply_markup: providerDetailKeyboard(prov || { id: provId, isBuiltin: 0, defaultModel: models[0] }),
+        reply_markup: providerDetailKeyboard(updatedProv),
       });
       return;
     }

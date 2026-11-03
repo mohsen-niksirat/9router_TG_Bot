@@ -33,11 +33,32 @@ import { sendChat } from 'lib/chat';
 import { maskKey, decryptKey } from 'lib/crypto';
 import { ROUTING_POLICIES } from 'lib/providers';
 
+// ─── Pure-JS Base64 Decode (No atob / Buffer in tgcloud) ──────────────────────
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function pureBase64Decode(str) {
+  let output = '';
+  let buffer = 0;
+  let bits = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (c === '=') break;
+    const val = B64_CHARS.indexOf(c);
+    if (val === -1) continue;
+    buffer = (buffer << 6) | val;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output += String.fromCharCode((buffer >>> bits) & 0xff);
+    }
+  }
+  return output;
+}
+
 // ─── Auth Resolution ──────────────────────────────────────────────────────────
 function resolveUserId(input, ctx) {
   // 1. Telegram-verified initData in ctx (when running inside telegram serverless)
   if (ctx?.initData?.user?.id) {
-    return { userId: ctx.initData.user.id, userObj: ctx.initData.user, trusted: true };
+    return { userId: Number(ctx.initData.user.id), userObj: ctx.initData.user, trusted: true };
   }
 
   // 2. Client sent initData in body or headers
@@ -49,15 +70,30 @@ function resolveUserId(input, ctx) {
       if (userStr) {
         const u = JSON.parse(userStr);
         if (u && u.id) {
-          return { userId: u.id, userObj: u, trusted: true };
+          return { userId: Number(u.id), userObj: u, trusted: true };
         }
       }
     } catch {}
   }
 
-  // 3. UID from query param or body
+  // 3. Authorization header: TMA <base64>
+  const authH = ctx?.headers?.authorization || ctx?.headers?.Authorization || '';
+  if (authH.toLowerCase().startsWith('tma ')) {
+    try {
+      const b64 = authH.slice(4).trim();
+      const raw = pureBase64Decode(b64);
+      const sp = new URLSearchParams(raw);
+      const userStr = sp.get('user');
+      if (userStr) {
+        const u = JSON.parse(userStr);
+        if (u && u.id) return { userId: Number(u.id), userObj: u, trusted: true };
+      }
+    } catch {}
+  }
+
+  // 4. UID from query param or body
   const uid = parseInt(input?.uid || input?.userId || 0, 10);
-  if (uid > 10000) {
+  if (uid > 1000) {
     return { userId: uid, userObj: { id: uid, first_name: 'User' }, trusted: true };
   }
 

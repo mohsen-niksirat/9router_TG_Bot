@@ -1022,7 +1022,6 @@ img { display: block; max-width: 100%; }
 
 <script>
 // ─── Environment & Telegram Bridge ────────────────────────────
-const API_BASE = 'https://app9029829582.tgcloud.ai/endpoints/api';
 const tg = window.Telegram?.WebApp;
 
 (function initTheme() {
@@ -1046,14 +1045,7 @@ let state = {
   selectedComboProviders: [],
 };
 
-// ─── Authentication Helper ────────────────────────────────────
-function getAuthPayload() {
-  if (tg?.initData) return { initData: tg.initData };
-  const uid = new URLSearchParams(location.search).get('uid');
-  if (uid) return { uid };
-  return {};
-}
-
+// ─── Authentication & Haptic Helpers ──────────────────────────
 function haptic(type = 'light') {
   try {
     if (tg?.HapticFeedback) {
@@ -1064,16 +1056,59 @@ function haptic(type = 'light') {
   } catch {}
 }
 
-// ─── API Wrapper ──────────────────────────────────────────────
+// ─── Unified API Bridge (Telegram Serverless & Fetch Fallback) ──
 async function api(action, extra = {}) {
-  const auth = getAuthPayload();
-  const res = await fetch(API_BASE, {
+  const payload = { action, ...extra };
+
+  // 1. Try official Telegram Serverless SDK call
+  if (tg?.Serverless?.call && tg?.initData) {
+    try {
+      const res = await new Promise((resolve, reject) => {
+        tg.Serverless.call('api', payload, (err, result) => {
+          if (err) reject(err);
+          else resolve(result);
+        });
+      });
+      if (res !== undefined && res !== null) {
+        return (typeof res === 'object' && res.result !== undefined) ? res.result : res;
+      }
+    } catch (e) {
+      console.warn('[9Router] Serverless.call error, falling back to fetch:', e);
+    }
+  }
+
+  // 2. Direct fetch to tgcloud edge endpoint /api/api
+  const headers = { 'Content-Type': 'application/json' };
+  if (tg?.initData) {
+    try {
+      headers['Authorization'] = 'TMA ' + window.btoa(tg.initData);
+      headers['X-Telegram-Init-Data'] = tg.initData;
+      payload.initData = tg.initData;
+    } catch {}
+  }
+  const uid = new URLSearchParams(location.search).get('uid');
+  if (uid && !payload.uid) payload.uid = uid;
+
+  const res = await fetch('/api/api', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, ...auth, ...extra }),
+    headers,
+    body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const errData = await res.json();
+      msg = errData.description || errData.error || msg;
+    } catch {}
+    throw new Error(msg);
+  }
+
+  const json = await res.json();
+  if (json && json.result !== undefined) {
+    return json.result;
+  }
+  return json;
 }
 
 function toast(msg, duration = 2500) {
@@ -1094,13 +1129,17 @@ function closeModal(id) {
 
 // ─── Tab Navigation ───────────────────────────────────────────
 document.querySelectorAll('.tab-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
     const tab = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach((t) => t.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('tab-' + tab).classList.add('active');
     haptic('light');
+
+    if (!state.userData) {
+      await refreshData();
+    }
 
     if (tab === 'combos') renderCombos();
     if (tab === 'keys') renderKeys();
@@ -1703,28 +1742,42 @@ function updateComboHeader() {
 async function refreshData() {
   try {
     const res = await api('get_data');
-    if (res.ok) state.userData = res;
-  } catch {}
+    if (res && res.ok) {
+      state.userData = res;
+      updateComboHeader();
+      renderCombos();
+      renderKeys();
+      renderSettings();
+    }
+  } catch (e) {
+    console.error('refreshData error:', e);
+  }
 }
 
 async function startApp() {
+  const loading = document.getElementById('loading');
   try {
     const res = await api('get_data');
-    if (res.ok) {
+    if (res && res.ok) {
       state.userData = res;
       updateComboHeader();
+      renderCombos();
+      renderKeys();
+      renderSettings();
     } else {
-      toast('⚠️ دسترسی به داده‌ها: ' + (res.error || ''));
+      toast('⚠️ دسترسی به داده‌ها: ' + (res?.error || 'لطفاً دوباره تلاش کنید'));
     }
   } catch (err) {
-    toast('❌ عدم امکان اتصال به ۹روتر');
+    console.error('startApp error:', err);
+    toast('❌ عدم امکان اتصال به ۹روتر: ' + (err.message || ''));
   }
 
   await loadHistory();
 
-  const loading = document.getElementById('loading');
-  loading.classList.add('hidden');
-  setTimeout(() => loading.remove(), 400);
+  if (loading) {
+    loading.classList.add('hidden');
+    setTimeout(() => loading.remove(), 400);
+  }
 }
 
 startApp();

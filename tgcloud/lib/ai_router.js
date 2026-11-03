@@ -236,9 +236,11 @@ export async function routeChat({
           }
         } catch (err) {
           lastError = err;
-          // If model not found (404), fall back to the next registered model for this provider!
-          if (err.status === 404) {
-            console.warn(`[9Router] Model ${model} returned 404 for ${slug}, trying next model in chain...`);
+          // If model not found or not served, fall back to the next registered model for this provider!
+          const isModelError = err.status === 404 ||
+            (err.status === 400 && /model|not found|not serve|does not exist/i.test(err.message || ''));
+          if (isModelError) {
+            console.warn(`[9Router] Model ${model} not served by ${slug}, trying next candidate model in chain...`);
             continue;
           }
           // Auth (401/403) or Rate Limit (429): break model loop to trigger key failover

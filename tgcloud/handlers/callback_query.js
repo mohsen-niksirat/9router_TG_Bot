@@ -40,6 +40,7 @@ import {
   providersKeyboard,
   providerDetailKeyboard,
   providerModelPickerKeyboard,
+  providerDeleteModelKeyboard,
   combosKeyboard,
   comboDetailKeyboard,
   routingPolicyKeyboard,
@@ -250,62 +251,154 @@ export default async function (query) {
       try { return JSON.parse(prov.models || '[]'); } catch { return []; }
     })();
 
-    const modelsListStr = models.length > 0 ? models.map((m) => `• <code>${escHtml(m)}</code>`).join('\n') : '<i>مدلی تعریف نشده است</i>';
+    const modelsListStr = models.length > 0
+      ? models.map((m) => `• <code>${escHtml(m)}</code> ${m === prov.defaultModel ? '<b>(پیش‌فرض فعلی ✅)</b>' : ''}`).join('\n')
+      : '<i>هیچ مدلی تعریف نشده است</i>';
 
     await edit(
       `🌐 <b>${escHtml(prov.name)}</b>\n\n` +
       `🏷️ شناسه: <code>${escHtml(prov.slug)}</code>\n` +
       `🔗 آدرس: <code>${escHtml(prov.baseUrl)}</code>\n` +
       `🎯 <b>مدل پیش‌فرض:</b> <code>${escHtml(prov.defaultModel || 'تعیین‌نشده')}</code>\n\n` +
-      `📋 <b>مدل‌های ثبت‌شده:</b>\n${modelsListStr}\n\n` +
-      `💡 با دکمه‌های زیر می‌توانید مدل‌های جدید اضافه کنید یا مدل پیش‌فرض را تغییر دهید.`,
+      `📋 <b>مدل‌های ثبت‌شده (${models.length}):</b>\n${modelsListStr}\n\n` +
+      `💡 <i>روی هر یک از دکمه‌های شیشه‌ای زیر کلیک کنید تا به عنوان مدل پیش‌فرض انتخاب شود:</i>`,
       providerDetailKeyboard(prov)
     );
     return;
   }
 
-  // Pick default model for provider
-  if (data.startsWith('p:defm:')) {
-    const provId = parseInt(data.replace('p:defm:', ''), 10);
+  // Set default model by index (fast & ≤ 64 bytes)
+  if (data.startsWith('p:sdm:')) {
+    const parts = data.split(':');
+    const provId = parseInt(parts[2], 10);
+    const modelIdx = parseInt(parts[3], 10);
+    const prov = await getProviderById(provId, user.id);
+    if (!prov) { await edit('❌ ارائه‌دهنده یافت نشد.', backKeyboard('a:providers')); return; }
+
+    let models = [];
+    try { models = JSON.parse(prov.models || '[]'); } catch {}
+    const chosenModel = models[modelIdx];
+    if (!chosenModel) {
+      await api.answerCallbackQuery({ callback_query_id: query.id, text: '⚠️ مدل یافت نشد!' }).catch(() => {});
+      return;
+    }
+
+    await updateProviderDefaultModel(provId, user.id, chosenModel);
+    prov.defaultModel = chosenModel;
+
+    await api.answerCallbackQuery({
+      callback_query_id: query.id,
+      text: `✅ مدل پیش‌فرض روی ${chosenModel} تنظیم شد`,
+    }).catch(() => {});
+
+    const modelsListStr = models.map((m) => `• <code>${escHtml(m)}</code> ${m === chosenModel ? '<b>(پیش‌فرض فعلی ✅)</b>' : ''}`).join('\n');
+
+    await edit(
+      `🌐 <b>${escHtml(prov.name)}</b>\n\n` +
+      `🏷️ شناسه: <code>${escHtml(prov.slug)}</code>\n` +
+      `🔗 آدرس: <code>${escHtml(prov.baseUrl)}</code>\n` +
+      `🎯 <b>مدل پیش‌فرض:</b> <code>${escHtml(chosenModel)}</code> ✅\n\n` +
+      `📋 <b>مدل‌های ثبت‌شده (${models.length}):</b>\n${modelsListStr}\n\n` +
+      `💡 <i>روی هر یک از دکمه‌های شیشه‌ای زیر کلیک کنید تا به عنوان مدل پیش‌فرض انتخاب شود:</i>`,
+      providerDetailKeyboard(prov)
+    );
+    return;
+  }
+
+  // Add new model(s) to provider
+  if (data.startsWith('p:addm:')) {
+    const provId = parseInt(data.replace('p:addm:', ''), 10);
+    const prov = await getProviderById(provId, user.id);
+    if (!prov) { await edit('❌ ارائه‌دهنده یافت نشد.', backKeyboard('a:providers')); return; }
+    await setWizard(from.id, `prov:models_add:${provId}`);
+    await edit(
+      `➕ <b>افزودن مدل جدید به ${escHtml(prov.name)}</b>\n\n` +
+      `لطفاً نام مدل یا مدل‌های جدید را ارسال فرمایید:\n` +
+      `• می‌توانید در <b>هر سطر نام یک مدل</b> را بنویسید\n` +
+      `• یا با <b>ویرگول (،)</b> نام‌ها را جدا کنید\n\n` +
+      `<i>مثال:</i>\n` +
+      `<code>qwen7b\ndeepseek-r1\nllama-3.3-70b</code>\n\n` +
+      `💡 مدل‌های ارسالی به لیست مدل‌های این سرویس‌دهنده اضافه خواهند شد.`,
+      backKeyboard(`p:view:${provId}`)
+    );
+    return;
+  }
+
+  // Delete model picker
+  if (data.startsWith('p:delmp:')) {
+    const provId = parseInt(data.replace('p:delmp:', ''), 10);
     const prov = await getProviderById(provId, user.id);
     if (!prov) { await edit('❌ ارائه‌دهنده یافت نشد.', backKeyboard('a:providers')); return; }
     let models = [];
     try { models = JSON.parse(prov.models || '[]'); } catch {}
-    if (models.length === 0) {
+
+    if (models.length <= 1) {
       await api.answerCallbackQuery({
         callback_query_id: query.id,
-        text: '⚠️ ابتدا با دکمه «ویرایش مدل‌ها» نام مدل‌ها را اضافه کنید!',
+        text: '⚠️ این ارائه‌دهنده حداقل باید یک مدل داشته باشد!',
         show_alert: true,
       }).catch(() => {});
       return;
     }
+
     await edit(
-      `🎯 <b>انتخاب مدل پیش‌فرض برای ${escHtml(prov.name)}</b>\n\n` +
-      `مدل پیش‌فرض فعلی: <code>${escHtml(prov.defaultModel || 'تعیین‌نشده')}</code>\n\n` +
-      `مدلی که مایلید به صورت پیش‌فرض فراخوانی شود را انتخاب فرمایید:`,
-      providerModelPickerKeyboard(prov, models)
+      `🗑️ <b>حذف مدل از ${escHtml(prov.name)}</b>\n\n` +
+      `روی مدل موردنظر جهت حذف کلیک فرمایید:`,
+      providerDeleteModelKeyboard(prov)
     );
     return;
   }
 
-  // Set default model for provider
-  if (data.startsWith('p:setdefm:')) {
-    const rest = data.replace('p:setdefm:', '');
-    const colonIdx = rest.indexOf(':');
-    const provId = parseInt(rest.slice(0, colonIdx), 10);
-    const model = rest.slice(colonIdx + 1);
-    await updateProviderDefaultModel(provId, user.id, model);
+  // Remove model by index
+  if (data.startsWith('p:rmm:')) {
+    const parts = data.split(':');
+    const provId = parseInt(parts[2], 10);
+    const modelIdx = parseInt(parts[3], 10);
     const prov = await getProviderById(provId, user.id);
+    if (!prov) { await edit('❌ ارائه‌دهنده یافت نشد.', backKeyboard('a:providers')); return; }
+
+    let models = [];
+    try { models = JSON.parse(prov.models || '[]'); } catch {}
+    if (models.length <= 1) {
+      await api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: '⚠️ حداقل یک مدل باید باقی بماند!',
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+
+    const removed = models.splice(modelIdx, 1)[0];
+    const newDefault = prov.defaultModel === removed ? models[0] : prov.defaultModel;
+    await updateProviderModels(provId, user.id, models, newDefault);
+    prov.defaultModel = newDefault;
+    prov.models = JSON.stringify(models);
+
     await api.answerCallbackQuery({
       callback_query_id: query.id,
-      text: `✅ مدل پیش‌فرض روی ${model} تنظیم شد`,
+      text: `🗑️ مدل ${removed} حذف شد`,
     }).catch(() => {});
+
     await edit(
-      `✅ <b>مدل پیش‌فرض ارائه‌دهنده با موفقیت تغییر یافت!</b>\n\n` +
-      `🌐 ارائه‌دهنده: <b>${escHtml(prov.name)}</b>\n` +
-      `🎯 مدل پیش‌فرض جدید: <code>${escHtml(model)}</code>`,
+      `🌐 <b>${escHtml(prov.name)}</b>\n\n` +
+      `مدل <code>${escHtml(removed)}</code> با موفقیت حذف شد.\n\n` +
+      `🎯 <b>مدل پیش‌فرض:</b> <code>${escHtml(newDefault)}</code>`,
       providerDetailKeyboard(prov)
     );
+    return;
+  }
+
+  // Compatibility for old p:defm: and p:models:
+  if (data.startsWith('p:defm:') || data.startsWith('p:models:')) {
+    const provId = parseInt(data.replace(/p:(defm|models):/, ''), 10);
+    const prov = await getProviderById(provId, user.id);
+    if (prov) {
+      await edit(
+        `🌐 <b>مدیریت مدل‌های ${escHtml(prov.name)}</b>\n\n` +
+        `💡 مدل پیش‌فرض با کلیک روی هر دکمه فعال می‌شود:`,
+        providerDetailKeyboard(prov)
+      );
+    }
     return;
   }
 
@@ -329,23 +422,6 @@ export default async function (query) {
       `✅ ارائه‌دهنده <b>${escHtml(prov?.name || 'سفارشی')}</b> با مدل پیش‌فرض <code>gpt-4o-mini</code> آماده شد!\n\n` +
       `اکنون می‌توانید کلیدهای این سرویس‌دهنده را از بخش «کلیدها» اضافه فرمایید.`,
       prov ? providerDetailKeyboard(prov) : backKeyboard('a:providers')
-    );
-    return;
-  }
-
-  if (data.startsWith('p:models:')) {
-    const provId = parseInt(data.replace('p:models:', ''), 10);
-    const prov = await getProviderById(provId, user.id);
-    await setWizard(from.id, `prov:models:${provId}`);
-    await edit(
-      `✏️ <b>ویرایش و افزودن مدل‌ها برای ${escHtml(prov?.name || '')}</b>\n\n` +
-      `لطفاً نام مدل‌ها را به یکی از روش‌های زیر ارسال فرمایید:\n` +
-      `• در هر سطر یک مدل بنویسید\n` +
-      `• یا با ویرگول (،) نام‌ها را از هم جدا کنید\n\n` +
-      `<i>مثال:</i>\n` +
-      `<code>gpt-4o\ngpt-4o-mini\nclaude-3-7-sonnet</code>\n\n` +
-      `💡 اولین مدل ارسالی به طور خودکار به عنوان مدل پیش‌فرض در نظر گرفته می‌شود.`,
-      backKeyboard(`p:view:${provId}`)
     );
     return;
   }

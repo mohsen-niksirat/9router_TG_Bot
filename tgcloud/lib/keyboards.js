@@ -128,8 +128,39 @@ export function providersKeyboard(providers) {
 
 export function providerDetailKeyboard(prov) {
   const rows = [];
-  rows.push([{ text: '🎯 انتخاب مدل پیش‌فرض', callback_data: `p:defm:${prov.id}` }]);
-  rows.push([{ text: '✏️ ویرایش / افزودن مدل‌ها', callback_data: `p:models:${prov.id}` }]);
+  const models = (() => {
+    try { return JSON.parse(prov.models || '[]'); } catch { return []; }
+  })();
+
+  // Render all registered models as clickable glass buttons
+  if (models.length > 0) {
+    let currentRow = [];
+    models.forEach((m, idx) => {
+      const isDef = m === prov.defaultModel;
+      const label = `${isDef ? '✅ ' : ''}${m}`;
+      // Put 2 short models per row, or 1 if longer
+      if (label.length > 18 && currentRow.length > 0) {
+        rows.push(currentRow);
+        currentRow = [];
+      }
+      currentRow.push({
+        text: label,
+        callback_data: `p:sdm:${prov.id}:${idx}`,
+      });
+      if (currentRow.length >= 2 || label.length > 18) {
+        rows.push(currentRow);
+        currentRow = [];
+      }
+    });
+    if (currentRow.length > 0) rows.push(currentRow);
+  }
+
+  // Model actions
+  rows.push([
+    { text: '➕ افزودن مدل جدید', callback_data: `p:addm:${prov.id}` },
+    { text: '🗑️ حذف مدل', callback_data: `p:delmp:${prov.id}` },
+  ]);
+
   if (!prov.isBuiltin) {
     rows.push([{ text: '🗑️ حذف این ارائه‌دهنده', callback_data: `p:del:${prov.id}` }]);
   }
@@ -137,12 +168,28 @@ export function providerDetailKeyboard(prov) {
   return { inline_keyboard: rows };
 }
 
+export function providerDeleteModelKeyboard(prov) {
+  const rows = [];
+  const models = (() => {
+    try { return JSON.parse(prov.models || '[]'); } catch { return []; }
+  })();
+
+  models.forEach((m, idx) => {
+    rows.push([{
+      text: `❌ حذف ${m}`,
+      callback_data: `p:rmm:${prov.id}:${idx}`,
+    }]);
+  });
+  rows.push([{ text: '🔙 بازگشت به ارائه‌دهنده', callback_data: `p:view:${prov.id}` }]);
+  return { inline_keyboard: rows };
+}
+
 export function providerModelPickerKeyboard(prov, models) {
-  const rows = models.map((m) => {
+  const rows = models.map((m, idx) => {
     const isDef = m === prov.defaultModel ? '✅ ' : '';
     return [{
       text: `${isDef}${m}`,
-      callback_data: `p:setdefm:${prov.id}:${m}`.slice(0, 64),
+      callback_data: `p:sdm:${prov.id}:${idx}`,
     }];
   });
   rows.push([{ text: '🔙 بازگشت', callback_data: `p:view:${prov.id}` }]);
