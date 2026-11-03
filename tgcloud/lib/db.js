@@ -32,6 +32,15 @@ export async function getOrCreateUser(tgUser) {
           models:       JSON.stringify(p.models),
           isBuiltin:    1,
         }).run();
+      } else if (p.slug === 'manus' && (exists.baseUrl !== p.baseUrl || exists.defaultModel === 'manus-1')) {
+        await db.update(userProviders)
+          .set({
+            baseUrl:      p.baseUrl,
+            defaultModel: p.defaultModel,
+            models:       JSON.stringify(p.models),
+          })
+          .where(eq(userProviders.id, exists.id))
+          .run();
       }
     }
     return { user, isNew: false };

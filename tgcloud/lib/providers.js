@@ -61,14 +61,14 @@ export const BUILTIN_PROVIDERS = [
   {
     slug: 'manus',
     name: 'Manus AI',
-    baseUrl: 'https://api.manus.ai/v1',
-    defaultModel: 'manus-1',
+    baseUrl: 'https://api.manus.ai',
+    defaultModel: 'standard',
     models: [
+      'standard',
+      'lite',
+      'max',
       'manus-1',
       'manus-pro',
-      'manus-agent',
-      'manus-vision',
-      'gpt-4o',
     ],
   },
   {

@@ -162,6 +162,216 @@ async function callOpenAICompat(baseUrl, apiKey, model, messages, maxTokens) {
   };
 }
 
+
+// ─── Manus AI (API v2 Tasks & Agents) ─────────────────────────────────────────
+
+const MANUS_IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
+
+function looksLikeManusMedia(url) {
+  if (!url || typeof url !== 'string') return false;
+  const u = url.toLowerCase();
+  return (
+    MANUS_IMAGE_EXTS.some((ext) => u.includes(ext)) ||
+    u.includes('manuscdn.com') ||
+    u.includes('files.manus') ||
+    u.includes('/asset') ||
+    u.includes('/image')
+  );
+}
+
+function extractManusMediaUrls(obj, list, depth = 0) {
+  if (!obj || depth > 7) return;
+  if (typeof obj === 'string') {
+    const mdMatches = Array.from(obj.matchAll(/https?:\/\/[^\s\)\"']+/g));
+    for (const m of mdMatches) {
+      if (looksLikeManusMedia(m[0])) list.push(m[0]);
+    }
+    return;
+  }
+  if (Array.isArray(obj)) {
+    for (const item of obj) extractManusMediaUrls(item, list, depth + 1);
+    return;
+  }
+  if (typeof obj === 'object') {
+    for (const key of ['fileUrl', 'file_url', 'url', 'download_url', 'downloadUrl', 'src', 'image_url', 'imageUrl']) {
+      const val = obj[key];
+      if (typeof val === 'string' && val.startsWith('http') && looksLikeManusMedia(val)) {
+        list.push(val);
+      }
+    }
+    for (const v of Object.values(obj)) {
+      extractManusMediaUrls(v, list, depth + 1);
+    }
+  }
+}
+
+/**
+ * Manus AI via official API v2 async task system.
+ * Docs: https://open.manus.ai/docs/v2/introduction
+ */
+async function callManus(apiKey, model, messages, maxTokens) {
+  // 1. Resolve agent profile (standard | lite | max)
+  let profile = 'standard';
+  const m = (model || '').toLowerCase();
+  if (m.includes('lite')) profile = 'lite';
+  else if (m.includes('max') || m.includes('pro')) profile = 'max';
+
+  // 2. Extract last user prompt & any image attachments
+  const userMessages = messages.filter((msg) => msg.role === 'user');
+  const lastUserMsg = userMessages[userMessages.length - 1] || messages[messages.length - 1];
+
+  let promptText = '';
+  const attachments = [];
+
+  if (typeof lastUserMsg.content === 'string') {
+    promptText = lastUserMsg.content;
+    const imgRegex = /\[Image: (data:[^\]]+)\]/g;
+    const matches = Array.from(promptText.matchAll(imgRegex));
+    for (let i = 0; i < matches.length; i++) {
+      attachments.push({
+        type: 'file',
+        file_data: matches[i][1],
+        filename: `photo_${i + 1}.jpg`,
+      });
+    }
+    promptText = promptText.replace(/\[Image: data:[^\]]+\]/g, '').trim();
+  } else if (Array.isArray(lastUserMsg.content)) {
+    let imgIdx = 0;
+    for (const part of lastUserMsg.content) {
+      if (part.type === 'text') {
+        promptText += (promptText ? '\n' : '') + (part.text || '');
+      } else if (part.type === 'image_url' && part.image_url?.url) {
+        imgIdx++;
+        attachments.push({
+          type: 'file',
+          file_data: part.image_url.url,
+          filename: `photo_${imgIdx}.jpg`,
+        });
+      }
+    }
+  }
+
+  if (!promptText && attachments.length > 0) {
+    promptText = 'کیفیت این تصویر را با دقت بهبود بده، جزئیات را تقویت کن و نتیجه را ارائه بده.';
+  } else if (!promptText) {
+    promptText = 'سلام، لطفاً خودت را معرفی کن و بگو چه امکاناتی داری.';
+  }
+
+  const contentParts = [{ type: 'text', text: promptText }];
+  for (const att of attachments) {
+    contentParts.push(att);
+  }
+
+  // 3. Create Task (POST /v2/task.create)
+  const createPayload = {
+    message: { content: contentParts },
+    agent_profile: profile,
+    hide_in_task_list: false,
+    interactive_mode: false,
+  };
+
+  const createRes = await fetch('https://api.manus.ai/v2/task.create', {
+    method: 'POST',
+    headers: {
+      'x-manus-api-key': apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(createPayload),
+  });
+
+  if (!createRes.ok) {
+    const errText = await createRes.text();
+    const err = new Error(`Manus task.create ${createRes.status}: ${errText.slice(0, 200)}`);
+    err.status = createRes.status;
+    throw err;
+  }
+
+  const createData = await createRes.json();
+  const taskId = createData.task_id || createData.data?.task_id;
+  const taskUrl = createData.task_url || createData.data?.task_url || `https://manus.im/app/${taskId}`;
+
+  if (!taskId) {
+    throw new Error('Manus API did not return a valid task_id.');
+  }
+
+  // 4. Poll for task execution (up to 28 seconds within edge timeout limit)
+  let assistantText = '';
+  const mediaList = [];
+  const startPoll = Date.now();
+  const maxPollMs = 28000;
+
+  while (Date.now() - startPoll < maxPollMs) {
+    await new Promise((r) => setTimeout(r, 3500));
+
+    try {
+      const listRes = await fetch(
+        `https://api.manus.ai/v2/task.listMessages?task_id=${taskId}&order=desc&limit=25`,
+        {
+          headers: { 'x-manus-api-key': apiKey },
+        }
+      );
+
+      if (!listRes.ok) continue;
+
+      const listData = await listRes.json();
+      const items = Array.isArray(listData)
+        ? listData
+        : (listData.messages || listData.data || listData.items || []);
+
+      let agentStatus = null;
+      for (const item of items) {
+        if (item.agent_status) agentStatus = item.agent_status;
+        if (item.status_update?.agent_status) agentStatus = item.status_update.agent_status;
+
+        const am = item.assistant_message || (item.type === 'assistant_message' ? item : null);
+        if (am) {
+          if (typeof am.content === 'string' && am.content.trim()) {
+            assistantText = am.content.trim();
+          } else if (Array.isArray(am.content)) {
+            const joined = am.content.map((p) => p.text || '').join('\n').trim();
+            if (joined) assistantText = joined;
+          }
+        }
+
+        extractManusMediaUrls(item, mediaList);
+      }
+
+      if (['completed', 'stopped', 'waiting'].includes(agentStatus)) {
+        break;
+      }
+    } catch (pollErr) {
+      console.warn('[9Router] Manus poll error:', pollErr);
+    }
+  }
+
+  // 5. Build final text with markdown image embeds
+  let finalContent = assistantText;
+  const uniqueFiles = Array.from(new Set(mediaList));
+  const imageMarkdown = uniqueFiles
+    .map((u) => `![تصویر Manus](${u})`)
+    .join('\n\n');
+
+  if (imageMarkdown) {
+    finalContent = finalContent ? `${finalContent}\n\n${imageMarkdown}` : imageMarkdown;
+  }
+
+  if (!finalContent) {
+    finalContent =
+      `🦾 <b>تسک مانوس ایجاد شد و در حال انجام است!</b>\n\n` +
+      `پردازش مانوس ممکن است کمی زمان ببرد. می‌توانید روند پیشرفت زنده یا فایل‌های تولیدشده را در لینک زیر پیگیری نمایید:\n` +
+      `🔗 <a href="${taskUrl}">مشاهده تسک در Manus</a>`;
+  } else {
+    finalContent += `\n\n🔗 <a href="${taskUrl}">مشاهده تسک در وب‌سایت Manus</a>`;
+  }
+
+  return {
+    text: finalContent,
+    promptTokens: 120,
+    completionTokens: 250,
+    totalTokens: 370,
+  };
+}
+
 // ─── Universal Chat ───────────────────────────────────────────────────────────
 
 /**
@@ -216,6 +426,8 @@ export async function routeChat({
           let result;
           if (slug === 'gemini') {
             result = await callGemini(plainKey, model, messages, maxTokens);
+          } else if (slug === 'manus') {
+            result = await callManus(plainKey, model, messages, maxTokens);
           } else {
             const baseUrl = provRow?.baseUrl || 'https://api.openai.com/v1';
             result = await callOpenAICompat(baseUrl, plainKey, model, messages, maxTokens);
