@@ -294,15 +294,12 @@ async function callManus(apiKey, model, messages, maxTokens) {
     throw new Error('Manus API did not return a valid task_id.');
   }
 
-  // 4. Poll for task execution (up to 28 seconds within edge timeout limit)
+  // 4. Check task execution and message events (no setTimeout in serverless)
   let assistantText = '';
   const mediaList = [];
-  const startPoll = Date.now();
-  const maxPollMs = 28000;
+  const maxAttempts = 6;
 
-  while (Date.now() - startPoll < maxPollMs) {
-    await new Promise((r) => setTimeout(r, 3500));
-
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const listRes = await fetch(
         `https://api.manus.ai/v2/task.listMessages?task_id=${taskId}&order=desc&limit=25`,
@@ -311,36 +308,36 @@ async function callManus(apiKey, model, messages, maxTokens) {
         }
       );
 
-      if (!listRes.ok) continue;
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        const items = Array.isArray(listData)
+          ? listData
+          : (listData.messages || listData.data || listData.items || []);
 
-      const listData = await listRes.json();
-      const items = Array.isArray(listData)
-        ? listData
-        : (listData.messages || listData.data || listData.items || []);
+        let agentStatus = null;
+        for (const item of items) {
+          if (item.agent_status) agentStatus = item.agent_status;
+          if (item.status_update?.agent_status) agentStatus = item.status_update.agent_status;
 
-      let agentStatus = null;
-      for (const item of items) {
-        if (item.agent_status) agentStatus = item.agent_status;
-        if (item.status_update?.agent_status) agentStatus = item.status_update.agent_status;
-
-        const am = item.assistant_message || (item.type === 'assistant_message' ? item : null);
-        if (am) {
-          if (typeof am.content === 'string' && am.content.trim()) {
-            assistantText = am.content.trim();
-          } else if (Array.isArray(am.content)) {
-            const joined = am.content.map((p) => p.text || '').join('\n').trim();
-            if (joined) assistantText = joined;
+          const am = item.assistant_message || (item.type === 'assistant_message' ? item : null);
+          if (am) {
+            if (typeof am.content === 'string' && am.content.trim()) {
+              assistantText = am.content.trim();
+            } else if (Array.isArray(am.content)) {
+              const joined = am.content.map((p) => p.text || '').join('\n').trim();
+              if (joined) assistantText = joined;
+            }
           }
+
+          extractManusMediaUrls(item, mediaList);
         }
 
-        extractManusMediaUrls(item, mediaList);
-      }
-
-      if (['completed', 'stopped', 'waiting'].includes(agentStatus)) {
-        break;
+        if (['completed', 'stopped', 'waiting'].includes(agentStatus) || mediaList.length > 0) {
+          break;
+        }
       }
     } catch (pollErr) {
-      console.warn('[9Router] Manus poll error:', pollErr);
+      console.warn('[9Router] Manus check error:', pollErr);
     }
   }
 

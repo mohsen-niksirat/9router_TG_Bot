@@ -408,8 +408,10 @@ export default async function (message) {
     if (mgId) {
       // Album of multiple photos in Telegram
       await addMediaGroupItem(mgId, user.id, chat.id, fileId, text);
-      // Wait for all album photos to arrive in buffer
-      await new Promise((r) => setTimeout(r, 700));
+      // Brief async yields to allow concurrent album updates to insert
+      for (let i = 0; i < 4; i++) {
+        await db.run('SELECT 1');
+      }
 
       const items = await getMediaGroupItems(mgId);
       // Only the first item coordinates the batch request
