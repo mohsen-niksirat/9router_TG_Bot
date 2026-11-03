@@ -4,6 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>9Router Chat — دستیار هوش مصنوعی</title>
+<script>
+// Safe btoa polyfill for UTF-8 / non-Latin1 characters (e.g. Persian names in Telegram user object)
+(function() {
+  var _origBtoa = window.btoa;
+  window.btoa = function(str) {
+    try {
+      return _origBtoa(unescape(encodeURIComponent(str)));
+    } catch (e) {
+      return _origBtoa(str);
+    }
+  };
+})();
+</script>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 /* ─── CSS Variables & Telegram Palette ───────────────────────── */
@@ -813,7 +826,7 @@ img { display: block; max-width: 100%; }
   pointer-events: none;
   transition: opacity 0.2s;
   white-space: nowrap;
-  z-index: 10000;
+  z-index: 100000;
 }
 #toast.show { opacity: 1; }
 
@@ -1064,59 +1077,90 @@ function haptic(type = 'light') {
   } catch {}
 }
 
+// ─── Safe UTF-8 Base64 Encoder ─────────────────────────────────
+function safeBtoa(str) {
+  try {
+    return window.btoa(unescape(encodeURIComponent(str)));
+  } catch {
+    try { return window.btoa(str); } catch { return ''; }
+  }
+}
+
 // ─── Unified API Bridge (Telegram Serverless & Fetch Fallback) ──
 async function api(action, extra = {}) {
   const payload = { action, ...extra };
 
-  // 1. Try official Telegram Serverless SDK call
+  // 1. Try official Telegram Serverless SDK call with 3000ms timeout
   if (tg?.Serverless?.call && tg?.initData) {
     try {
       const res = await new Promise((resolve, reject) => {
-        tg.Serverless.call('api', payload, (err, result) => {
-          if (err) reject(err);
-          else resolve(result);
-        });
+        const timer = setTimeout(() => reject(new Error('Serverless timeout')), 3000);
+        try {
+          tg.Serverless.call('api', payload, (err, result) => {
+            clearTimeout(timer);
+            if (err) reject(err);
+            else resolve(result);
+          });
+        } catch (callErr) {
+          clearTimeout(timer);
+          reject(callErr);
+        }
       });
       if (res !== undefined && res !== null) {
         return (typeof res === 'object' && res.result !== undefined) ? res.result : res;
       }
     } catch (e) {
-      console.warn('[9Router] Serverless.call error, falling back to fetch:', e);
+      console.warn('[9Router] Serverless.call error/timeout, falling back to fetch:', e);
     }
   }
 
   // 2. Direct fetch to tgcloud edge endpoint /api/api
   const headers = { 'Content-Type': 'application/json' };
   if (tg?.initData) {
-    try {
-      headers['Authorization'] = 'TMA ' + window.btoa(tg.initData);
-      headers['X-Telegram-Init-Data'] = tg.initData;
-      payload.initData = tg.initData;
-    } catch {}
+    const b64 = safeBtoa(tg.initData);
+    if (b64) headers['Authorization'] = 'TMA ' + b64;
+    headers['X-Telegram-Init-Data'] = tg.initData;
+    payload.initData = tg.initData;
   }
-  const uid = new URLSearchParams(location.search).get('uid');
-  if (uid && !payload.uid) payload.uid = uid;
+  const uid = new URLSearchParams(location.search).get('uid') || tg?.initDataUnsafe?.user?.id;
+  if (uid && !payload.uid) payload.uid = String(uid);
 
-  const res = await fetch('/api/api', {
+  let controller = null;
+  let fetchTimer = null;
+  try {
+    controller = new AbortController();
+    fetchTimer = setTimeout(() => controller.abort(), 4500);
+  } catch {}
+
+  const fetchOpts = {
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
-  });
+  };
+  if (controller) fetchOpts.signal = controller.signal;
 
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try {
-      const errData = await res.json();
-      msg = errData.description || errData.error || msg;
-    } catch {}
-    throw new Error(msg);
-  }
+  try {
+    const res = await fetch('/api/api', fetchOpts);
+    if (fetchTimer) clearTimeout(fetchTimer);
 
-  const json = await res.json();
-  if (json && json.result !== undefined) {
-    return json.result;
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const errData = await res.json();
+        msg = errData.description || errData.error || msg;
+      } catch {}
+      throw new Error(msg);
+    }
+
+    const json = await res.json();
+    if (json && json.result !== undefined) {
+      return json.result;
+    }
+    return json;
+  } catch (err) {
+    if (fetchTimer) clearTimeout(fetchTimer);
+    throw err;
   }
-  return json;
 }
 
 function toast(msg, duration = 2500) {
@@ -1828,10 +1872,56 @@ async function refreshData() {
   }
 }
 
-async function startApp() {
+function dismissLoading() {
   const loading = document.getElementById('loading');
+  if (loading && !loading.classList.contains('hidden')) {
+    loading.classList.add('hidden');
+    setTimeout(() => {
+      try { loading.remove(); } catch {}
+    }, 400);
+  }
+}
+
+function renderFallbackUI(err) {
+  const el = document.getElementById('active-combo-label');
+  if (el) {
+    el.innerHTML = `⚠️ در حال آماده‌سازی ۹روتر...`;
+  }
+  const combosContainer = document.getElementById('combos-list');
+  if (combosContainer && !combosContainer.children.length) {
+    combosContainer.innerHTML = `
+      <div class="section-top">
+        <div class="section-title">کمبوهای من</div>
+        <button class="btn-primary-sm" onclick="openAddComboModal()">➕ ایجاد کمبو</button>
+      </div>
+      <div class="empty-card">
+        <div class="empty-icon">🔀</div>
+        <p>کمبوهای تعریف‌شده در تلگرام پس از اتصال نمایش داده می‌شوند.</p>
+      </div>`;
+  }
+  const keysContainer = document.getElementById('keys-list');
+  if (keysContainer && !keysContainer.children.length) {
+    keysContainer.innerHTML = `
+      <div class="section-top">
+        <div class="section-title">کلیدهای API</div>
+      </div>
+      <div class="empty-card">
+        <div class="empty-icon">🔑</div>
+        <p>برای مدیریت و افزودن کلیدهای هوش مصنوعی، در چت ربات تلگرام دستور <code>/keys</code> را ارسال کنید.</p>
+      </div>`;
+  }
+}
+
+async function startApp() {
+  // Absolute fail-safe: dismiss spinner in maximum 1.8 seconds under ANY condition
+  const failSafeTimer = setTimeout(dismissLoading, 1800);
+
   try {
-    const res = await api('get_data');
+    const res = await Promise.race([
+      api('get_data'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 2500))
+    ]);
+
     if (res && res.ok) {
       state.userData = res;
       updateComboHeader();
@@ -1839,19 +1929,18 @@ async function startApp() {
       renderKeys();
       renderSettings();
     } else {
-      toast('⚠️ دسترسی به داده‌ها: ' + (res?.error || 'لطفاً دوباره تلاش کنید'));
+      renderFallbackUI(res?.error);
     }
   } catch (err) {
-    console.error('startApp error:', err);
-    toast('❌ عدم امکان اتصال به ۹روتر: ' + (err.message || ''));
+    console.warn('startApp get_data fallback:', err);
+    renderFallbackUI(err.message);
+  } finally {
+    clearTimeout(failSafeTimer);
+    dismissLoading();
   }
 
-  await loadHistory();
-
-  if (loading) {
-    loading.classList.add('hidden');
-    setTimeout(() => loading.remove(), 400);
-  }
+  // Load chat history in background without blocking initial UI
+  loadHistory().catch(() => {});
 }
 
 startApp();
