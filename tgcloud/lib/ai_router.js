@@ -166,6 +166,18 @@ async function callOpenAICompat(baseUrl, apiKey, model, messages, maxTokens) {
 // ─── Manus AI (API v2 Tasks & Agents) ─────────────────────────────────────────
 
 const MANUS_IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
+const MANUS_INPUT_HINTS = [
+  'user_input',
+  'input_photo',
+  'telegram_photo',
+  'telegram_document',
+  '/input/',
+  'input_image',
+  'source_image',
+  'original_image',
+  'upload',
+  'attachment',
+];
 
 function looksLikeManusMedia(url) {
   if (!url || typeof url !== 'string') return false;
@@ -179,12 +191,30 @@ function looksLikeManusMedia(url) {
   );
 }
 
+function isManusInputFile(url, name) {
+  const s = `${name || ''} ${url || ''}`.toLowerCase();
+  if (
+    s.includes('output') ||
+    s.includes('result') ||
+    s.includes('edited') ||
+    s.includes('export') ||
+    s.includes('generated') ||
+    s.includes('final')
+  ) {
+    return false;
+  }
+  return MANUS_INPUT_HINTS.some((hint) => s.includes(hint));
+}
+
 function extractManusMediaUrls(obj, list, depth = 0) {
-  if (!obj || depth > 7) return;
+  if (!obj || depth > 8) return;
   if (typeof obj === 'string') {
     const mdMatches = Array.from(obj.matchAll(/https?:\/\/[^\s\)\"']+/g));
     for (const m of mdMatches) {
-      if (looksLikeManusMedia(m[0])) list.push(m[0]);
+      const u = m[0];
+      if (looksLikeManusMedia(u) && !isManusInputFile(u, '')) {
+        list.push(u);
+      }
     }
     return;
   }
@@ -195,8 +225,11 @@ function extractManusMediaUrls(obj, list, depth = 0) {
   if (typeof obj === 'object') {
     for (const key of ['fileUrl', 'file_url', 'url', 'download_url', 'downloadUrl', 'src', 'image_url', 'imageUrl']) {
       const val = obj[key];
+      const name = obj.fileName || obj.filename || obj.name || '';
       if (typeof val === 'string' && val.startsWith('http') && looksLikeManusMedia(val)) {
-        list.push(val);
+        if (!isManusInputFile(val, name)) {
+          list.push(val);
+        }
       }
     }
     for (const v of Object.values(obj)) {
@@ -231,7 +264,7 @@ async function callManus(apiKey, model, messages, maxTokens) {
       attachments.push({
         type: 'file',
         file_data: matches[i][1],
-        filename: `photo_${i + 1}.jpg`,
+        filename: `user_input_photo_${i + 1}.jpg`,
       });
     }
     promptText = promptText.replace(/\[Image: data:[^\]]+\]/g, '').trim();
@@ -245,14 +278,14 @@ async function callManus(apiKey, model, messages, maxTokens) {
         attachments.push({
           type: 'file',
           file_data: part.image_url.url,
-          filename: `photo_${imgIdx}.jpg`,
+          filename: `user_input_photo_${imgIdx}.jpg`,
         });
       }
     }
   }
 
   if (!promptText && attachments.length > 0) {
-    promptText = 'کیفیت این تصویر را با دقت بهبود بده، جزئیات را تقویت کن و نتیجه را ارائه بده.';
+    promptText = 'کیفیت این تصویر را با دقت بسیار بالا ببر، رنگ‌ها و جزئیات آن را بهبود ببخش و نسخه نهایی باکیفیت را ارائه بده.';
   } else if (!promptText) {
     promptText = 'سلام، لطفاً خودت را معرفی کن و بگو چه امکاناتی داری.';
   }
@@ -294,15 +327,17 @@ async function callManus(apiKey, model, messages, maxTokens) {
     throw new Error('Manus API did not return a valid task_id.');
   }
 
-  // 4. Check task execution and message events (no setTimeout in serverless)
+  // 4. Poll task execution & retrieve assistant output
   let assistantText = '';
   const mediaList = [];
-  const maxAttempts = 6;
+  let agentStatus = 'running';
+  let statusDetail = {};
+  const deadline = Date.now() + 25000; // Poll for up to 25 seconds within webhook budget
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  while (Date.now() < deadline) {
     try {
       const listRes = await fetch(
-        `https://api.manus.ai/v2/task.listMessages?task_id=${taskId}&order=desc&limit=25`,
+        `https://api.manus.ai/v2/task.listMessages?task_id=${taskId}&order=desc&limit=30`,
         {
           headers: { 'x-manus-api-key': apiKey },
         }
@@ -314,25 +349,74 @@ async function callManus(apiKey, model, messages, maxTokens) {
           ? listData
           : (listData.messages || listData.data || listData.items || []);
 
-        let agentStatus = null;
+        const assistantTexts = [];
+
         for (const item of items) {
+          if (!item) continue;
+
+          // STRICT FILTER: NEVER extract text or media from user input messages!
+          if (item.type === 'user_message' || item.role === 'user' || item.user_message) {
+            continue;
+          }
+
           if (item.agent_status) agentStatus = item.agent_status;
-          if (item.status_update?.agent_status) agentStatus = item.status_update.agent_status;
+          if (item.status_update?.agent_status) {
+            agentStatus = item.status_update.agent_status;
+            if (item.status_update.status_detail) statusDetail = item.status_update.status_detail;
+          }
 
           const am = item.assistant_message || (item.type === 'assistant_message' ? item : null);
           if (am) {
             if (typeof am.content === 'string' && am.content.trim()) {
-              assistantText = am.content.trim();
+              assistantTexts.push(am.content.trim());
             } else if (Array.isArray(am.content)) {
-              const joined = am.content.map((p) => p.text || '').join('\n').trim();
-              if (joined) assistantText = joined;
+              for (const part of am.content) {
+                if (part.type === 'text' && part.text && part.text.trim()) {
+                  assistantTexts.push(part.text.trim());
+                }
+              }
             }
           }
 
+          // Extract media ONLY from assistant/tool execution items
           extractManusMediaUrls(item, mediaList);
         }
 
-        if (['completed', 'stopped', 'waiting'].includes(agentStatus) || mediaList.length > 0) {
+        if (assistantTexts.length > 0) {
+          const uniqueTexts = [];
+          for (const t of assistantTexts) {
+            if (!uniqueTexts.includes(t)) uniqueTexts.push(t);
+          }
+          // Reverse because listMessages is order=desc (newest first)
+          assistantText = uniqueTexts.reverse().join('\n\n');
+        }
+
+        if (['completed', 'stopped', 'waiting', 'failed', 'error'].includes(agentStatus)) {
+          break;
+        }
+      }
+
+      // Check task detail for additional status & artifact outputs
+      const detailRes = await fetch(
+        `https://api.manus.ai/v2/task.detail?task_id=${taskId}`,
+        {
+          headers: { 'x-manus-api-key': apiKey },
+        }
+      );
+
+      if (detailRes.ok) {
+        const detailData = await detailRes.json();
+        const taskInfo = detailData.data || detailData.task || detailData;
+        if (taskInfo.agent_status || taskInfo.status) {
+          agentStatus = taskInfo.agent_status || taskInfo.status;
+        }
+        if (taskInfo.status_detail) statusDetail = taskInfo.status_detail;
+        if (taskInfo.summary && !assistantText) {
+          assistantText = taskInfo.summary;
+        }
+        extractManusMediaUrls(taskInfo, mediaList);
+
+        if (['completed', 'stopped', 'waiting', 'failed', 'error'].includes(agentStatus)) {
           break;
         }
       }
@@ -353,10 +437,17 @@ async function callManus(apiKey, model, messages, maxTokens) {
   }
 
   if (!finalContent) {
-    finalContent =
-      `🦾 <b>تسک مانوس ایجاد شد و در حال انجام است!</b>\n\n` +
-      `پردازش مانوس ممکن است کمی زمان ببرد. می‌توانید روند پیشرفت زنده یا فایل‌های تولیدشده را در لینک زیر پیگیری نمایید:\n` +
-      `🔗 <a href="${taskUrl}">مشاهده تسک در Manus</a>`;
+    if (agentStatus === 'waiting') {
+      const waitReason = statusDetail.waiting_description || 'نیاز به تأیید کاربر در مانوس';
+      finalContent =
+        `⏸ <b>تسک مانوس در انتظار اقدام شما است:</b>\n${waitReason}\n\n` +
+        `🔗 <a href="${taskUrl}">مشاهده و اقدام در وب‌سایت Manus</a>`;
+    } else {
+      finalContent =
+        `⏳ <b>تسک مانوس ایجاد شد و پردازش تصویر در سرور ادامه دارد...</b>\n\n` +
+        `پردازش‌های هوشمند و سنگین مانوس در پس‌زمینه در حال اجرا هستند. به محض پایان پردازش می‌توانید نتیجه را در پنل زیر نیز دریافت نمایید:\n` +
+        `🔗 <a href="${taskUrl}">مشاهده زنده روند در وب‌سایت Manus</a>`;
+    }
   } else {
     finalContent += `\n\n🔗 <a href="${taskUrl}">مشاهده تسک در وب‌سایت Manus</a>`;
   }

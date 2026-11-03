@@ -462,31 +462,73 @@ export default async function (message) {
     const result = await sendChat(user, from.id, promptWithImages);
     const footer = `\n\n<i>—— ${result.provider} / ${result.model}</i>`;
 
-    // Check if AI generated or returned an image URL
-    const imgUrlMatch = result.text.match(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/) ||
-                        result.text.match(/(https?:\/\/\S+\.(?:png|jpe?g|webp))/i);
+    // 1. Collect all AI-generated or returned image URLs
+    const mdImgMatches = Array.from(result.text.matchAll(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/g)).map((m) => m[1]);
+    const directImgMatches = Array.from(result.text.matchAll(/(https?:\/\/\S+\.(?:png|jpe?g|webp))/gi)).map((m) => m[1]);
+    const generatedImages = Array.from(new Set([...mdImgMatches, ...directImgMatches]));
 
-    if (imgUrlMatch) {
-      const generatedImageUrl = imgUrlMatch[1];
-      const cleanDesc = result.text.replace(/!\[.*?\]\(https?:\/\/[^\s\)]+\)/g, '').trim();
-      const photoCaption = (cleanDesc.slice(0, 950) + footer).slice(0, 1024);
+    const cleanDesc = result.text.replace(/!\[.*?\]\(https?:\/\/[^\s\)]+\)/g, '').trim();
 
+    if (generatedImages.length > 0) {
+      const firstImg = generatedImages[0];
+      const hasHtml = /<\/?(?:b|i|a|code|pre)(?:>|\s[^>]*>)/i.test(cleanDesc);
+      const formattedDesc = hasHtml ? cleanDesc : escHtml(cleanDesc);
+
+      // If caption fits within Telegram's 1024 photo caption limit
+      if (formattedDesc.length <= 880) {
+        try {
+          await api.sendPhoto({
+            chat_id: chat.id,
+            photo: firstImg,
+            caption: formattedDesc ? `${formattedDesc}${footer}` : footer.trim(),
+            parse_mode: 'HTML',
+            reply_markup: chatActionsKeyboard(),
+          });
+          await api.deleteMessage({ chat_id: chat.id, message_id: thinkMsg.message_id }).catch(() => {});
+
+          for (let i = 1; i < generatedImages.length; i++) {
+            await api.sendPhoto({
+              chat_id: chat.id,
+              photo: generatedImages[i],
+              caption: `🖼️ تصویر خروجی ${i + 1}`,
+            }).catch(() => {});
+          }
+          return;
+        } catch (photoErr) {
+          console.warn('[9Router] sendPhoto caption failed, falling back:', photoErr);
+        }
+      }
+
+      // If caption is long (> 880 chars): send photo with brief caption, then full text via message!
       try {
         await api.sendPhoto({
           chat_id: chat.id,
-          photo: generatedImageUrl,
-          caption: photoCaption,
+          photo: firstImg,
+          caption: `🖼️ <b>تصویر خروجی هوش مصنوعی</b>${footer}`,
+          parse_mode: 'HTML',
+        });
+        for (let i = 1; i < generatedImages.length; i++) {
+          await api.sendPhoto({
+            chat_id: chat.id,
+            photo: generatedImages[i],
+            caption: `🖼️ تصویر خروجی ${i + 1}`,
+          }).catch(() => {});
+        }
+        await api.editMessageText({
+          chat_id: chat.id,
+          message_id: thinkMsg.message_id,
+          text: (formattedDesc.slice(0, 3950) + footer).slice(0, 4096),
           parse_mode: 'HTML',
           reply_markup: chatActionsKeyboard(),
         });
-        await api.deleteMessage({ chat_id: chat.id, message_id: thinkMsg.message_id }).catch(() => {});
         return;
       } catch (photoErr) {
-        console.warn('[9Router] sendPhoto failed, falling back to text:', photoErr);
+        console.warn('[9Router] sendPhoto split failed, falling back to text:', photoErr);
       }
     }
 
-    const fullText = escHtml(result.text) + footer;
+    const hasHtml = /<\/?(?:b|i|a|code|pre)(?:>|\s[^>]*>)/i.test(result.text);
+    const fullText = (hasHtml ? result.text : escHtml(result.text)) + footer;
 
     await api.editMessageText({
       chat_id: chat.id,
