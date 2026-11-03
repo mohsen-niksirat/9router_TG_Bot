@@ -1354,14 +1354,6 @@ async function sendMessage() {
   state.isLoading = false;
   document.getElementById('send-btn').disabled = false;
 }
-    renderMessage('ai', '❌ متأسفانه ارتباط با سرور یا هوش مصنوعی برقرار نشد.');
-    toast('❌ قطع اتصال به سرور');
-    haptic('error');
-  }
-
-  state.isLoading = false;
-  document.getElementById('send-btn').disabled = false;
-}
 
 // Auto-expand textarea
 document.getElementById('msg-input').addEventListener('input', function () {
