@@ -64,30 +64,65 @@ export async function manusApiKeyFor(user) {
   }
 }
 
-export async function fetchImageBytes(url, apiKey = '') {
+export function getCleanFileName(url, defaultName = 'output.png') {
   try {
-    const headers = {};
-    if (apiKey) {
-      headers['x-manus-api-key'] = apiKey;
-      headers['Authorization'] = `Bearer ${apiKey}`;
+    const rawName = decodeURIComponent(url.split('?')[0].split('/').pop() || defaultName);
+    // Decode base64 paths like _L2hvbWUvdWJ1bnR1L2VuaGFuY2VkX2hvcml6b250YWxfcGhvdG8.png
+    // (which is /home/ubuntu/enhanced_horizontal_photo)
+    const b64Match = rawName.match(/_([A-Za-z0-9+/=]{16,})\.(png|jpe?g|webp|gif)/i);
+    if (b64Match) {
+      try {
+        const decoded = Buffer.from(b64Match[1], 'base64').toString('utf-8');
+        const cleanBase = decoded.split('/').pop();
+        if (cleanBase && /^[a-zA-Z0-9_\-\.]+$/.test(cleanBase)) {
+          return `${cleanBase}.${b64Match[2].toLowerCase()}`;
+        }
+      } catch {}
     }
+    let clean = rawName.replace(/^[a-zA-Z0-9_-]{15,}_/g, '');
+    if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(clean)) clean += '.png';
+    return clean.slice(0, 60);
+  } catch {
+    return defaultName;
+  }
+}
 
-    let res = await withTimeout(fetch(url, { headers }), 12000).catch(() => null);
-    if ((!res || !res.ok) && apiKey) {
-      // Retry without headers for signed/presigned S3 endpoints
-      res = await withTimeout(fetch(url), 12000).catch(() => null);
+export async function fetchImageBytes(url, apiKey = '') {
+  if (!url || typeof url !== 'string' || !url.startsWith('http')) return null;
+
+  const isPresignedS3 =
+    url.includes('amazonaws.com') ||
+    url.includes('s3.') ||
+    url.includes('X-Amz-Signature') ||
+    url.includes('X-Amz-Credential');
+
+  const headers = {};
+  if (apiKey && !isPresignedS3 && (url.includes('api.manus.ai') || url.includes('files.manus.im'))) {
+    headers['x-manus-api-key'] = apiKey;
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  try {
+    let res = await fetch(url, { headers });
+    if (!res.ok && Object.keys(headers).length > 0) {
+      res = await fetch(url);
     }
 
     if (res && res.ok) {
       const buf = await res.arrayBuffer();
       if (buf && buf.byteLength > 100) {
-        const ct = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
-        const mime = ct.includes('webp') ? 'image/webp' : (ct.includes('jpeg') || ct.includes('jpg') ? 'image/jpeg' : 'image/png');
+        const ct = (res.headers.get('content-type') || 'image/png').split(';')[0].trim().toLowerCase();
+        let mime = 'image/png';
+        if (ct.includes('webp')) mime = 'image/webp';
+        else if (ct.includes('jpeg') || ct.includes('jpg')) mime = 'image/jpeg';
+        else if (ct.includes('gif')) mime = 'image/gif';
         return { bytes: new Uint8Array(buf), mime };
       }
+    } else {
+      console.warn(`[9Router] fetchImageBytes HTTP ${res?.status} on ${url.slice(0, 80)}`);
     }
   } catch (e) {
-    console.warn('[9Router] fetchImageBytes failed:', e);
+    console.warn('[9Router] fetchImageBytes network error:', e.message || e);
   }
   return null;
 }
@@ -112,9 +147,7 @@ export async function sendFullResult(chatId, taskId, snap, apiKey = '') {
   if (images.length) {
     for (let i = 0; i < images.length; i++) {
       const imgUrl = images[i];
-      let fileName = decodeURIComponent(imgUrl.split('?')[0].split('/').pop() || `output_${i + 1}.png`);
-      if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(fileName)) fileName += '.png';
-
+      const fileName = getCleanFileName(imgUrl, `output_${i + 1}.png`);
       const fileData = await fetchImageBytes(imgUrl, apiKey);
       const photoPayload = fileData
         ? new InputFile(fileData.bytes, fileName, { type: fileData.mime })

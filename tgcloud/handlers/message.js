@@ -41,7 +41,7 @@ import {
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
 import { sleep, withTimeout } from 'lib/sleep';
-import { enqueuePendingTask, deliverPendingTasks, manusApiKeyFor } from 'lib/manus_pending';
+import { enqueuePendingTask, deliverPendingTasks, manusApiKeyFor, fetchImageBytes, getCleanFileName } from 'lib/manus_pending';
 import {
   escHtml,
   sanitizeTelegramHtml,
@@ -93,33 +93,6 @@ async function isGroupAdmin(chatId, userId) {
   } catch {
     return false;
   }
-}
-
-async function fetchImageBytes(url, apiKey = '') {
-  try {
-    const headers = {};
-    if (apiKey) {
-      headers['x-manus-api-key'] = apiKey;
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
-
-    let res = await withTimeout(fetch(url, { headers }), 12000).catch(() => null);
-    if ((!res || !res.ok) && apiKey) {
-      res = await withTimeout(fetch(url), 12000).catch(() => null);
-    }
-
-    if (res && res.ok) {
-      const buf = await res.arrayBuffer();
-      if (buf && buf.byteLength > 100) {
-        const ct = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
-        const mime = ct.includes('webp') ? 'image/webp' : (ct.includes('jpeg') || ct.includes('jpg') ? 'image/jpeg' : 'image/png');
-        return { bytes: new Uint8Array(buf), mime };
-      }
-    }
-  } catch (e) {
-    console.warn('[9Router] fetchImageBytes failed:', e);
-  }
-  return null;
 }
 
 export default async function (message) {
@@ -1283,9 +1256,7 @@ export default async function (message) {
       const manusKey = await manusApiKeyFor(user);
       for (let i = 0; i < generatedImages.length; i++) {
         const imgUrl = generatedImages[i];
-        let fileName = decodeURIComponent(imgUrl.split('?')[0].split('/').pop() || `output_${i + 1}.png`);
-        if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(fileName)) fileName += '.png';
-
+        const fileName = getCleanFileName(imgUrl, `output_${i + 1}.png`);
         const fileData = await fetchImageBytes(imgUrl, manusKey);
 
         // 3a. Inline Photo (instant visual preview in chat)
