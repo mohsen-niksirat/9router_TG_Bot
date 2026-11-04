@@ -816,3 +816,88 @@ export async function isGroupMuted(chatId) {
     return false;
   }
 }
+
+// ─── Bot Admin & Analytics ───────────────────────────────────────────────────
+export async function getAdminTgIds() {
+  try {
+    const row = await db.select().from(config).where(eq(config.key, 'admin_tg_ids')).get();
+    if (row && row.value) {
+      return row.value.split(',').map((id) => id.trim()).filter(Boolean);
+    }
+    // If not explicitly configured, the first registered user is owner/admin
+    const firstUser = await db.select({ tgId: users.tgId }).from(users).orderBy(asc(users.id)).limit(1).get();
+    if (firstUser && firstUser.tgId) {
+      return [String(firstUser.tgId)];
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+export async function isBotAdmin(tgId) {
+  try {
+    const admins = await getAdminTgIds();
+    if (admins.length === 0) return true;
+    return admins.includes(String(tgId));
+  } catch {
+    return false;
+  }
+}
+
+export async function addAdminTgId(tgId) {
+  try {
+    const admins = await getAdminTgIds();
+    const strId = String(tgId).trim();
+    if (!admins.includes(strId)) {
+      admins.push(strId);
+      await db.delete(config).where(eq(config.key, 'admin_tg_ids')).run();
+      await db.insert(config).values({ key: 'admin_tg_ids', value: admins.join(',') }).run();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getBotAdminStats() {
+  const totalUsersRow = await db.get(sql`SELECT COUNT(*) AS count FROM users`) || {};
+  const totalSessionsRow = await db.get(sql`SELECT COUNT(*) AS count FROM chat_sessions`) || {};
+  const totalKeysRow = await db.get(sql`SELECT COUNT(*) AS count FROM user_keys`) || {};
+  const totalTokensRow = await db.get(sql`SELECT COALESCE(SUM(total_tokens), 0) AS count FROM token_usage`) || {};
+
+  const now = Math.floor(Date.now() / 1000);
+  const dayStart = now - (now % 86400);
+  const todayActiveRow = await db.get(sql`
+    SELECT COUNT(DISTINCT user_id) AS count FROM token_usage WHERE created_at >= ${dayStart}
+  `) || {};
+
+  return {
+    totalUsers: totalUsersRow.count || 0,
+    totalSessions: totalSessionsRow.count || 0,
+    totalKeys: totalKeysRow.count || 0,
+    totalTokens: totalTokensRow.count || 0,
+    todayActive: todayActiveRow.count || 0,
+  };
+}
+
+export async function getUsersPage(page = 0, pageSize = 10) {
+  const offset = page * pageSize;
+  const rows = await db.all(sql`
+    SELECT id, tg_id AS tgId, name, username, created_at AS createdAt
+    FROM users
+    ORDER BY id DESC
+    LIMIT ${pageSize} OFFSET ${offset}
+  `) || [];
+
+  const totalRow = await db.get(sql`SELECT COUNT(*) AS count FROM users`) || {};
+  const total = totalRow.count || 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  return {
+    users: rows,
+    page,
+    totalPages,
+    total,
+  };
+}

@@ -40,6 +40,9 @@ import {
   getChatSessionById,
   deleteChatSession,
   restoreChatSession,
+  isBotAdmin,
+  getBotAdminStats,
+  getUsersPage,
 } from 'lib/db';
 import { sendChat } from 'lib/chat';
 import { decryptKey, maskKey } from 'lib/crypto';
@@ -67,6 +70,7 @@ import {
   newChatPickerKeyboard,
   sessionsKeyboard,
   sessionDetailKeyboard,
+  adminPanelKeyboard,
 } from 'lib/keyboards';
 
 export default async function (query) {
@@ -422,6 +426,51 @@ async function handleCallback(query) {
       `🗑️ گفتگو با موفقیت از آرشیو حذف شد.\n\nتعداد گفتگوهای باقیمانده: <b>${list.length}</b>`,
       sessionsKeyboard(list)
     );
+    return;
+  }
+
+  // ─── Admin Panel Pagination / Refresh ──────────────────────────────────────
+  if (data.startsWith('adm:users:')) {
+    const isAdmin = await isBotAdmin(from.id);
+    if (!isAdmin) {
+      await api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: '⛔ دسترسی غیرمجاز!',
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+
+    const page = parseInt(data.replace('adm:users:', ''), 10) || 0;
+    const stats = await getBotAdminStats();
+    const userPage = await getUsersPage(page, 10);
+
+    let usersText = '';
+    if (userPage.users.length === 0) {
+      usersText = '<i>کاربری در این صفحه یافت نشد.</i>';
+    } else {
+      usersText = userPage.users.map((u, i) => {
+        const uNum = page * 10 + i + 1;
+        const uName = escHtml(u.name || 'بدون نام');
+        const uUser = u.username ? `@${escHtml(u.username)}` : 'ندارد';
+        const uDate = u.createdAt ? new Date(u.createdAt * 1000).toLocaleDateString('fa-IR') : '—';
+        return `${uNum}. <b>${uName}</b> (${uUser})\n   🆔 <code>${u.tgId}</code> | 🗓️ ${uDate}`;
+      }).join('\n\n');
+    }
+
+    const msg =
+      `👑 <b>پنل مدیریت ربات 9Router</b>\n\n` +
+      `📊 <b>آمار کل سیستم:</b>\n` +
+      `👥 کل کاربران: <b>${stats.totalUsers.toLocaleString()}</b> نفر\n` +
+      `⚡ کاربران فعال امروز: <b>${stats.todayActive.toLocaleString()}</b> نفر\n` +
+      `📜 کل سشن‌های گفتگو: <b>${stats.totalSessions.toLocaleString()}</b> گفتگو\n` +
+      `🔑 کلیدهای ثبت‌شده: <b>${stats.totalKeys.toLocaleString()}</b> کلید\n` +
+      `📈 مجموع توکن مصرفی: <b>${stats.totalTokens.toLocaleString()}</b> توکن\n\n` +
+      `────────────────\n` +
+      `👥 <b>فهرست کاربران (صفحه ${userPage.page + 1} از ${userPage.totalPages}):</b>\n\n` +
+      usersText;
+
+    await edit(msg, adminPanelKeyboard(userPage.page, userPage.totalPages));
     return;
   }
 

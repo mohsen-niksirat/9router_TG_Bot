@@ -424,3 +424,23 @@ export function sessionDetailKeyboard(sessionId) {
     ],
   };
 }
+
+// ─── Admin Keyboards ──────────────────────────────────────────────────────────
+export function adminPanelKeyboard(page = 0, totalPages = 1) {
+  const rows = [];
+  const navRow = [];
+  if (page > 0) {
+    navRow.push({ text: '◀️ صفحه قبل', callback_data: `adm:users:${page - 1}` });
+  }
+  if (page < totalPages - 1) {
+    navRow.push({ text: 'صفحه بعد ▶️', callback_data: `adm:users:${page + 1}` });
+  }
+  if (navRow.length > 0) {
+    rows.push(navRow);
+  }
+  rows.push([
+    { text: '🔄 به‌روزرسانی آمار', callback_data: `adm:users:${page}` },
+    { text: '🔙 منوی اصلی', callback_data: 'a:menu' },
+  ]);
+  return { inline_keyboard: rows };
+}

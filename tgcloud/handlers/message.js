@@ -32,6 +32,10 @@ import {
   setGroupMuted,
   isGroupMuted,
   getChatSessions,
+  isBotAdmin,
+  addAdminTgId,
+  getBotAdminStats,
+  getUsersPage,
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
@@ -53,6 +57,7 @@ import {
   promptDetailKeyboard,
   newChatPickerKeyboard,
   sessionsKeyboard,
+  adminPanelKeyboard,
 } from 'lib/keyboards';
 import { ROUTING_POLICIES } from 'lib/providers';
 
@@ -193,7 +198,7 @@ export default async function (message) {
     }
 
     // Protect private menus from leaking in groups
-    const privateCmds = ['/start', '/keys', '/combos', '/providers', '/stats', '/prompts', '/new', '/sessions', '/history'];
+    const privateCmds = ['/start', '/keys', '/combos', '/providers', '/stats', '/prompts', '/new', '/sessions', '/history', '/admin', '/users'];
     if (privateCmds.some(cmd => text.startsWith(cmd))) {
       const botInfo = await getBotInfo();
       const botUser = botInfo?.username || 'NineRouterBot';
@@ -615,6 +620,80 @@ export default async function (message) {
           : `هنوز هیچ گفتگوی ذخیره‌شده‌ای در آرشیو شما وجود ندارد.\nبا شروع چت جدید و تبادل پیام، گفتگوهای شما به طور خودکار آرشیو می‌شوند.`),
       parse_mode: 'HTML',
       reply_markup: sessionsKeyboard(list),
+    });
+    return;
+  }
+
+  // ─── /admin or /users (Bot Owner Admin Panel) ─────────────────────────────
+  if (text === '/admin' || text === '/users' || text.startsWith('/admin ') || text === '👑 پنل مدیریت') {
+    // Check claim
+    if (text === '/admin claim') {
+      await addAdminTgId(from.id);
+      await api.sendMessage({
+        chat_id: chat.id,
+        text: `✅ شناسه کاربری شما (<code>${from.id}</code>) به عنوان مدیر اصلی ربات ثبت گردید!`,
+        parse_mode: 'HTML',
+      });
+      return;
+    }
+
+    const isAdmin = await isBotAdmin(from.id);
+    if (!isAdmin) {
+      await api.sendMessage({
+        chat_id: chat.id,
+        text: '⛔ <b>دسترسی غیرمجاز!</b>\nاین دستور فقط برای مدیر ربات فعال است.',
+        parse_mode: 'HTML',
+      });
+      return;
+    }
+
+    // Subcommand: /admin add <tgId>
+    if (text.startsWith('/admin add ')) {
+      const newAdminId = text.replace('/admin add ', '').trim();
+      if (/^\d+$/.test(newAdminId)) {
+        await addAdminTgId(newAdminId);
+        await api.sendMessage({
+          chat_id: chat.id,
+          text: `✅ شناسه <code>${newAdminId}</code> به عنوان ادمین جدید اضافه شد.`,
+          parse_mode: 'HTML',
+        });
+        return;
+      }
+    }
+
+    const stats = await getBotAdminStats();
+    const userPage = await getUsersPage(0, 10);
+
+    let usersText = '';
+    if (userPage.users.length === 0) {
+      usersText = '<i>هنوز کاربری ثبت نشده است.</i>';
+    } else {
+      usersText = userPage.users.map((u, i) => {
+        const uNum = i + 1;
+        const uName = escHtml(u.name || 'بدون نام');
+        const uUser = u.username ? `@${escHtml(u.username)}` : 'ندارد';
+        const uDate = u.createdAt ? new Date(u.createdAt * 1000).toLocaleDateString('fa-IR') : '—';
+        return `${uNum}. <b>${uName}</b> (${uUser})\n   🆔 <code>${u.tgId}</code> | 🗓️ ${uDate}`;
+      }).join('\n\n');
+    }
+
+    const msg =
+      `👑 <b>پنل مدیریت ربات 9Router</b>\n\n` +
+      `📊 <b>آمار کل سیستم:</b>\n` +
+      `👥 کل کاربران: <b>${stats.totalUsers.toLocaleString()}</b> نفر\n` +
+      `⚡ کاربران فعال امروز: <b>${stats.todayActive.toLocaleString()}</b> نفر\n` +
+      `📜 کل سشن‌های گفتگو: <b>${stats.totalSessions.toLocaleString()}</b> گفتگو\n` +
+      `🔑 کلیدهای ثبت‌شده: <b>${stats.totalKeys.toLocaleString()}</b> کلید\n` +
+      `📈 مجموع توکن مصرفی: <b>${stats.totalTokens.toLocaleString()}</b> توکن\n\n` +
+      `────────────────\n` +
+      `👥 <b>فهرست کاربران (صفحه ۱ از ${userPage.totalPages}):</b>\n\n` +
+      usersText;
+
+    await api.sendMessage({
+      chat_id: chat.id,
+      text: msg,
+      parse_mode: 'HTML',
+      reply_markup: adminPanelKeyboard(0, userPage.totalPages),
     });
     return;
   }
