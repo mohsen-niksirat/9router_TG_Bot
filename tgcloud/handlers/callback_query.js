@@ -51,6 +51,20 @@ import {
 } from 'lib/keyboards';
 
 export default async function (query) {
+  try {
+    await handleCallback(query);
+  } finally {
+    // Clear Telegram's button spinner on every path — some branches only
+    // editMessage and never answered, leaving the client spinner up ~1-5s.
+    // Branches that already answered get a harmless duplicate-error (caught).
+    const qid = query && query.id;
+    if (qid) {
+      await api.answerCallbackQuery({ callback_query_id: qid }).catch(() => {});
+    }
+  }
+}
+
+async function handleCallback(query) {
   if (!query || !query.data) return;
   const data = query.data;
   const from = query.from;
@@ -161,7 +175,7 @@ export default async function (query) {
     const k = allKeys.find((x) => x.id === keyId);
     if (!k) { await edit('❌ کلید یافت نشد.', backKeyboard('a:keys')); return; }
 
-    const plain = decryptKey(k.apiKeyEnc, from.id);
+    const plain = await decryptKey(k.apiKeyEnc, from.id);
     const statusIcon = k.status === 'active' ? '✅ فعال' : k.status === 'cooldown' ? '⏳ خنک‌سازی' : '❌ غیرفعال';
     await edit(
       `🔑 <b>${escHtml(k.label)}</b>\n\n` +

@@ -40,8 +40,8 @@ Each user can store their own private API keys (securely encrypted at rest), org
   - `Round-Robin`: Distributes load equally across keys within the provider pool.
   - `Smart Router`: Prioritizes the fastest provider/key with the lowest measured latency.
   - `Least Used`: Automatically selects the key with the lowest token / request count.
-- **🔐 Client-Isolated Encrypted Key Vault:**
-  - Keys are encrypted at rest with symmetric keystream ciphers. No shared pools; every user owns and controls their own keys.
+- **🔐 Encrypted Key Vault:**
+  - Keys are encrypted at rest with a per-install random secret plus a fresh IV per ciphertext (pure-JS keystream cipher) — never anything derived from public data such as a user id. No shared pools; every user owns and controls their own keys.
 - **🔀 Custom Combos & Model Chains:**
   - Combine multiple providers into a single unified virtual model.
   - Configure candidate fallback models per provider (e.g., `gemini-2.5-flash -> gemini-2.5-pro -> gpt-4o-mini`).
@@ -114,7 +114,7 @@ export TGCLOUD_TOKEN="appXXXXX:YOUR_TOKEN"
 ```
 
 #### 3. Database Migration
-Apply schema tables (`users`, `user_providers`, `user_keys`, `combos`, `chat_history`, `token_usage`):
+Apply schema tables (`users`, `user_providers`, `user_keys`, `combos`, `chat_history`, `token_usage`, `media_group_buffer`, `chat_claims`, `config`):
 ```bash
 npx tgcloud migrate --safe
 ```
@@ -183,7 +183,7 @@ Configure the Web App button:
    - **روتر هوشمند (Smart Router):** ارزیابی پینگ و زمان پاسخ ارائه‌دهنده‌ها و هدایت درخواست به سریع‌ترین ارائه‌دهنده.
    - **کمترین استفاده (Least Used):** انتخاب کلیدی که کمترین میزان توکن و درخواست را مصرف کرده است.
 2. **🔐 گاوصندوق رمزنگاری‌شده کلیدها (Vault):**
-   - کلیدهای هر کاربر در دیتابیس به صورت کاملاً ایزوله و با الگوریتم متقارن رمزنگاری می‌شوند و هیچ کاربری به کلیدهای دیگری دسترسی ندارد.
+   - کلیدهای هر کاربر با یک secret تصادفی مخصوص همان نصب و IV مجزا برای هر رمزنگاری (شیفر جریان کلیددار خالص جاوااسکریپت) رمزنگاری میشوند — رمزگشایی بدون آن secret سمت سرور ممکن نیست و هیچ کاربری به کلیدهای دیگران دسترسی ندارد.
 3. **🔀 کمبوهای اختصاصی و زنجیره مدل‌ها (Combos):**
    - امکان ترکیب چند ارائه‌دهنده در قالب یک پکیج واحد (مثلاً Gemini + Groq).
    - تعریف مدل‌های اولویت‌دار و مدل‌های پشتیبان به ازای هر ارائه‌دهنده (جدا شده با خط جدید یا کاما).

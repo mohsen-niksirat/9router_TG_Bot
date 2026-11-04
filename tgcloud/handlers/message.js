@@ -19,12 +19,14 @@ import {
   getUsageStats,
   addMediaGroupItem,
   getMediaGroupItems,
-  clearMediaGroupItems,
+  consumeMediaGroupItems,
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
+import { sleep } from 'lib/sleep';
 import {
   escHtml,
+  sanitizeTelegramHtml,
   buildMiniAppUrl,
   mainMenuKeyboard,
   mainReplyKeyboard,
@@ -36,6 +38,11 @@ import {
   backKeyboard,
 } from 'lib/keyboards';
 import { ROUTING_POLICIES } from 'lib/providers';
+
+// Photos are re-encoded to a base64 data URL (+37%) inside the chat payload.
+// Cap at 9MB so the request body stays under every provider's upload limit
+// (OpenAI/Gemini ~20MB raw → ~27MB base64 = HTTP 400 before the model ever sees it).
+const MAX_IMAGE_BYTES = 9 * 1024 * 1024;
 
 export default async function (message) {
   if (!message || !message.chat) return;
@@ -76,6 +83,16 @@ export default async function (message) {
 
   if (wState !== 'idle' && !isNavText) {
     const ctx = parseWizardData(user);
+
+    // Combo-wizard steps (policy & provider pick) are button-driven — stray
+    // typing must not fall through to the AI chat while the wizard is open.
+    if (wState === 'combo:policy' || wState === 'combo:pickprov') {
+      await api.sendMessage({
+        chat_id: chat.id,
+        text: '👆 لطفاً با دکمه‌های همین مرحله جلو بروید، یا «❌ لغو» بزنید.',
+      });
+      return;
+    }
 
     // ── Add Provider: step 1 — name ──
     if (wState === 'prov:name') {
@@ -406,27 +423,46 @@ export default async function (message) {
     const fileId = photos ? photos[photos.length - 1].file_id : message.document.file_id;
 
     if (mgId) {
-      // Album of multiple photos in Telegram
-      await addMediaGroupItem(mgId, user.id, chat.id, fileId, text);
-      // Brief async yields to allow concurrent album updates to insert
-      for (let i = 0; i < 4; i++) {
-        await db.run('SELECT 1');
+      // Album of multiple photos in Telegram — delivered as separate,
+      // concurrent updates that all run this handler.
+      const inserted = await addMediaGroupItem(mgId, user.id, chat.id, fileId, text);
+
+      // Debounce: poll the shared buffer until it stops growing (the isolate
+      // has no setTimeout — sleep() spins with db yields). Sibling updates do
+      // the same; whoever inserted the earliest row runs the batch once.
+      let items = [];
+      let prevCount = -1;
+      let stable = 0;
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && stable < 4) {
+        items = await getMediaGroupItems(mgId);
+        if (items.length > 0 && items.length === prevCount) stable++;
+        else {
+          stable = 0;
+          prevCount = items.length;
+        }
+        if (stable < 4) await sleep(350);
       }
 
-      const items = await getMediaGroupItems(mgId);
-      // Only the first item coordinates the batch request
-      if (!items || items.length === 0 || items[0].fileId !== fileId) {
-        return;
+      if (!items.length || items[0].id !== inserted.id) {
+        return; // not the earliest row — the coordinator owns this batch
       }
-      await clearMediaGroupItems(mgId);
+
+      // Consume only the rows we actually read; anything inserted after our
+      // last poll survives for its own late update instead of being dropped.
+      await consumeMediaGroupItems(mgId, items.map((r) => r.id));
 
       const imgParts = [];
       let albumCaption = '';
+      let droppedBig = 0;
       for (const it of items) {
         if (it.caption && !albumCaption) albumCaption = it.caption;
         try {
           const bytes = await api.getFileContent(it.fileId);
-          if (bytes) {
+          if (bytes && bytes.length > MAX_IMAGE_BYTES) {
+            droppedBig++;
+            console.warn(`[9Router] Album image too large (${bytes.length} B), skipped`);
+          } else if (bytes) {
             imgParts.push(`[Image: data:image/jpeg;base64,${uint8ToBase64(bytes)}]`);
           }
         } catch (e) {
@@ -434,11 +470,29 @@ export default async function (message) {
         }
       }
 
+      if (!imgParts.length) {
+        await api.sendMessage({
+          chat_id: chat.id,
+          text: droppedBig
+            ? `⚠️ عکسهای این آلبوم بزرگتر از سقف ۹MB هستند و برای مدل ارسال نشدند؛ لطفاً عکس کوچکتری بفرستید.`
+            : '⚠️ دریافت عکسهای این آلبوم ممکن نشد؛ لطفاً دوباره تلاش کنید.',
+        });
+        return;
+      }
+
       promptWithImages = (albumCaption ? `${albumCaption}\n\n` : '') + imgParts.join('\n');
     } else {
       // Single photo
       try {
         const bytes = await api.getFileContent(fileId);
+        if (bytes && bytes.length > MAX_IMAGE_BYTES) {
+          const mb = (bytes.length / 1048576).toFixed(1);
+          await api.sendMessage({
+            chat_id: chat.id,
+            text: `⚠️ عکس ارسالی ${mb}MB است و بزرگتر از سقف مجاز ۹MB میباشد؛ لطفاً عکس کوچکتری بفرستید.`,
+          });
+          return;
+        }
         if (bytes) {
           const imgPart = `[Image: data:image/jpeg;base64,${uint8ToBase64(bytes)}]`;
           promptWithImages = text ? `${text}\n\n${imgPart}` : imgPart;
@@ -471,8 +525,9 @@ export default async function (message) {
 
     if (generatedImages.length > 0) {
       const firstImg = generatedImages[0];
-      const hasHtml = /<\/?(?:b|i|a|code|pre)(?:>|\s[^>]*>)/i.test(cleanDesc);
-      const formattedDesc = hasHtml ? cleanDesc : escHtml(cleanDesc);
+      // Telegram parses caption as HTML — sanitize so `<br>` / `3 < 4` in model
+      // output can't cause a "can't parse entities" 400 instead of delivery.
+      const formattedDesc = sanitizeTelegramHtml(cleanDesc);
 
       // If caption fits within Telegram's 1024 photo caption limit
       if (formattedDesc.length <= 880) {
@@ -527,8 +582,7 @@ export default async function (message) {
       }
     }
 
-    const hasHtml = /<\/?(?:b|i|a|code|pre)(?:>|\s[^>]*>)/i.test(result.text);
-    const fullText = (hasHtml ? result.text : escHtml(result.text)) + footer;
+    const fullText = sanitizeTelegramHtml(result.text) + footer;
 
     await api.editMessageText({
       chat_id: chat.id,

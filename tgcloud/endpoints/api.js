@@ -5,8 +5,8 @@
  */
 
 import { db } from 'sdk';
-import { eq, and } from 'sdk/db';
-import { users } from 'schema';
+import { eq, and, gt, lt } from 'sdk/db';
+import { users, chatClaims } from 'schema';
 import {
   getOrCreateUser,
   getUser,
@@ -30,79 +30,24 @@ import {
   getUsageStats,
 } from 'lib/db';
 import { sendChat } from 'lib/chat';
-import { maskKey, decryptKey } from 'lib/crypto';
+import { fingerprint } from 'lib/crypto';
 import { ROUTING_POLICIES } from 'lib/providers';
 
-// ─── Pure-JS Base64 Decode (No atob / Buffer in tgcloud) ──────────────────────
-const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-function pureBase64Decode(str) {
-  let output = '';
-  let buffer = 0;
-  let bits = 0;
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
-    if (c === '=') break;
-    const val = B64_CHARS.indexOf(c);
-    if (val === -1) continue;
-    buffer = (buffer << 6) | val;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      output += String.fromCharCode((buffer >>> bits) & 0xff);
-    }
-  }
-  return output;
-}
-
 // ─── Auth Resolution ──────────────────────────────────────────────────────────
-function resolveUserId(input, ctx) {
-  // 1. Telegram-verified initData in ctx (when running inside telegram serverless)
-  if (ctx?.initData?.user?.id) {
-    return { userId: Number(ctx.initData.user.id), userObj: ctx.initData.user, trusted: true };
-  }
-
-  // 2. Client sent initData in body or headers
-  const rawInitData = input?.initData || ctx?.headers?.['x-telegram-init-data'];
-  if (rawInitData && typeof rawInitData === 'string') {
-    try {
-      const sp = new URLSearchParams(rawInitData);
-      const userStr = sp.get('user');
-      if (userStr) {
-        const u = JSON.parse(userStr);
-        if (u && u.id) {
-          return { userId: Number(u.id), userObj: u, trusted: true };
-        }
-      }
-    } catch {}
-  }
-
-  // 3. Authorization header: TMA <base64>
-  const authH = ctx?.headers?.authorization || ctx?.headers?.Authorization || '';
-  if (authH.toLowerCase().startsWith('tma ')) {
-    try {
-      const b64 = authH.slice(4).trim();
-      const raw = pureBase64Decode(b64);
-      const sp = new URLSearchParams(raw);
-      const userStr = sp.get('user');
-      if (userStr) {
-        const u = JSON.parse(userStr);
-        if (u && u.id) return { userId: Number(u.id), userObj: u, trusted: true };
-      }
-    } catch {}
-  }
-
-  // 4. UID from query param or body
-  const uid = parseInt(input?.uid || input?.userId || 0, 10);
-  if (uid > 1000) {
-    return { userId: uid, userObj: { id: uid, first_name: 'User' }, trusted: true };
-  }
-
-  return { userId: null, userObj: null, trusted: false };
+// ONLY platform-verified init data counts as identity. The gateway rejects any
+// request without a valid Telegram init-data signature with 401 BEFORE this
+// handler runs (verified live), so a client-supplied `initData`/uid must never
+// be parsed or trusted here — those former fallbacks = full impersonation if
+// this code ever runs on a non-validating host.
+function resolveUserId(ctx) {
+  const user = ctx && ctx.initData && ctx.initData.user;
+  if (user && user.id) return { userId: Number(user.id), userObj: user };
+  return { userId: null, userObj: null };
 }
 
-// ─── Main Handler ─────────────────────────────────────────────────────────────
+// ─── Main Handler ────────────────────────────────────────────────────────────
 export default async function (input, ctx) {
-  const { userId, userObj, trusted } = resolveUserId(input, ctx);
+  const { userId, userObj } = resolveUserId(ctx);
 
   if (!userId) {
     return { ok: false, status: 401, error: 'احراز هویت الزامی است. لطفاً ربات را مجدداً استارت کنید.' };
@@ -187,6 +132,33 @@ export default async function (input, ctx) {
       return { ok: false, error: 'هیچ کمبویی فعال نیست. ابتدا یک کمبو انتخاب یا ایجاد کنید.' };
     }
 
+    // Duplicate suppression: a client that timed out re-sending `chat` would run
+    // — and bill — the whole conversation twice. Claim (user, text) first; a
+    // concurrent duplicate gets a short notice instead of a second AI call.
+    const now = Math.floor(Date.now() / 1000);
+    const fp = fingerprint(message);
+    await db.delete(chatClaims).where(and(
+      eq(chatClaims.userId, user.id),
+      lt(chatClaims.createdAt, now - 60),
+    )).run();
+    const dupClaim = await db.select().from(chatClaims).where(and(
+      eq(chatClaims.userId, user.id),
+      eq(chatClaims.fingerprint, fp),
+      gt(chatClaims.createdAt, now - 15),
+    )).get();
+    if (dupClaim) {
+      return {
+        ok: true,
+        duplicate: true,
+        text: '⏳ این پیام چند لحظه پیش هم ارسال شد و در حال پردازش است — اولین پاسخ به‌زودی می‌رسد.',
+      };
+    }
+    const claimRows = await db.insert(chatClaims)
+      .values({ userId: user.id, fingerprint: fp })
+      .returning()
+      .run();
+    const claimId = claimRows && claimRows[0] ? claimRows[0].id : null;
+
     try {
       const result = await sendChat(user, userId, message);
       return {
@@ -197,6 +169,10 @@ export default async function (input, ctx) {
       };
     } catch (err) {
       return { ok: false, error: err.message };
+    } finally {
+      if (claimId != null) {
+        await db.delete(chatClaims).where(eq(chatClaims.id, claimId)).run();
+      }
     }
   }
 

@@ -1089,12 +1089,18 @@ function safeBtoa(str) {
 // ─── Unified API Bridge (Telegram Serverless & Fetch Fallback) ──
 async function api(action, extra = {}) {
   const payload = { action, ...extra };
+  // `chat` is NOT idempotent: the server keeps running after we stop waiting,
+  // and the fetch fallback would fire the whole conversation a SECOND time
+  // (double AI call + double history). Give it the full budget — Manus tasks
+  // legitimately take ~25s — and never re-send it.
+  const isChat = action === 'chat';
+  const callBudget = isChat ? 62000 : 3000;
 
-  // 1. Try official Telegram Serverless SDK call with 3000ms timeout
+  // 1. Try official Telegram Serverless SDK call
   if (tg?.Serverless?.call && tg?.initData) {
     try {
       const res = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('Serverless timeout')), 3000);
+        const timer = setTimeout(() => reject(new Error('Serverless timeout')), callBudget);
         try {
           tg.Serverless.call('api', payload, (err, result) => {
             clearTimeout(timer);
@@ -1109,8 +1115,10 @@ async function api(action, extra = {}) {
       if (res !== undefined && res !== null) {
         return (typeof res === 'object' && res.result !== undefined) ? res.result : res;
       }
+      if (isChat) throw new Error('پاسخ خالی از سرور دریافت شد');
     } catch (e) {
       console.warn('[9Router] Serverless.call error/timeout, falling back to fetch:', e);
+      if (isChat) throw e; // never double-fire this one
     }
   }
 

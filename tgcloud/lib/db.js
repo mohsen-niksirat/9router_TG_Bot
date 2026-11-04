@@ -17,12 +17,17 @@ export async function getOrCreateUser(tgUser) {
   const tgId = Number(tgUser.id);
   let user = await db.select().from(users).where(eq(users.tgId, tgId)).get();
   if (user) {
-    // Auto-seed any newly added built-in providers (e.g. Manus AI, FreeAI) for existing users
+    // Auto-seed any newly added built-in providers in ONE pass: fetch the
+    // user's existing slugs once instead of querying existence per built-in
+    // (this ran on every message — 7 round-trips per chat before this fix).
+    const existing = await db.select().from(userProviders)
+      .where(eq(userProviders.userId, user.id))
+      .all();
+    const bySlug = new Map(existing.map((r) => [r.slug, r]));
+
     for (const p of BUILTIN_PROVIDERS) {
-      const exists = await db.select().from(userProviders)
-        .where(and(eq(userProviders.userId, user.id), eq(userProviders.slug, p.slug)))
-        .get();
-      if (!exists) {
+      const found = bySlug.get(p.slug);
+      if (!found) {
         await db.insert(userProviders).values({
           userId:       user.id,
           name:         p.name,
@@ -32,14 +37,14 @@ export async function getOrCreateUser(tgUser) {
           models:       JSON.stringify(p.models),
           isBuiltin:    1,
         }).run();
-      } else if (p.slug === 'manus' && (exists.baseUrl !== p.baseUrl || exists.defaultModel === 'manus-1')) {
+      } else if (p.slug === 'manus' && (found.baseUrl !== p.baseUrl || found.defaultModel === 'manus-1')) {
         await db.update(userProviders)
           .set({
             baseUrl:      p.baseUrl,
             defaultModel: p.defaultModel,
             models:       JSON.stringify(p.models),
           })
-          .where(eq(userProviders.id, exists.id))
+          .where(eq(userProviders.id, found.id))
           .run();
       }
     }
@@ -175,7 +180,7 @@ export async function deleteCustomProvider(id, userId) {
 // ─── User Keys ────────────────────────────────────────────────────────────────
 
 export async function addKey(userId, tgId, { providerSlug, apiKey, label }) {
-  const encrypted = encryptKey(apiKey, tgId);
+  const encrypted = await encryptKey(apiKey, tgId);
   const last = await db.select({ sortOrder: userKeys.sortOrder })
     .from(userKeys)
     .where(and(eq(userKeys.userId, userId), eq(userKeys.providerSlug, providerSlug)))
@@ -261,6 +266,19 @@ export async function markKeyResult(keyId, success, statusCode = 200) {
       status:       'dead',
       lastUsedAt:   now,
       failureCount: sql`failure_count + 1`,
+    }).where(eq(userKeys.id, keyId)).run();
+    return;
+  }
+
+  if (statusCode >= 500) {
+    // Upstream flaked (5xx / network failure — routeChat passes 500 when the
+    // error has no status). Sit the key out briefly so the *next* request also
+    // rotates past it instead of hitting the same broken endpoint first.
+    await db.update(userKeys).set({
+      status:        'cooldown',
+      cooldownUntil: now + 30,
+      lastUsedAt:    now,
+      failureCount:  sql`failure_count + 1`,
     }).where(eq(userKeys.id, keyId)).run();
     return;
   }
@@ -387,24 +405,37 @@ export async function getUsageStats(userId) {
   const weekAgo  = now - 7 * 86400;
   const monthAgo = now - 30 * 86400;
 
-  const all = await db.select().from(tokenUsage)
-    .where(eq(tokenUsage.userId, userId))
-    .all();
+  // Aggregate in SQL — token_usage grows by one row per chat, so loading the
+  // whole table in memory made /stats progressively slower.
+  const totals = await db.get(sql`
+    SELECT
+      COALESCE(SUM(CASE WHEN created_at >= ${dayStart}  THEN total_tokens END), 0) AS today,
+      COALESCE(SUM(CASE WHEN created_at >= ${weekAgo}   THEN total_tokens END), 0) AS week,
+      COALESCE(SUM(CASE WHEN created_at >= ${monthAgo}  THEN total_tokens END), 0) AS month,
+      COALESCE(SUM(total_tokens), 0) AS alltime
+    FROM token_usage
+    WHERE user_id = ${userId}
+  `) || {};
 
-  let today = 0, week = 0, month = 0, allTime = 0;
+  const rows = await db.all(sql`
+    SELECT COALESCE(provider, 'unknown') AS provider, COALESCE(SUM(total_tokens), 0) AS total
+    FROM token_usage
+    WHERE user_id = ${userId}
+    GROUP BY provider
+  `);
+
   const byProvider = {};
-
-  for (const row of all) {
-    const t = row.totalTokens || 0;
-    allTime += t;
-    if (row.createdAt >= monthAgo) month += t;
-    if (row.createdAt >= weekAgo)  week  += t;
-    if (row.createdAt >= dayStart) today += t;
-    const p = (row.provider || 'unknown').toLowerCase();
-    byProvider[p] = (byProvider[p] || 0) + t;
+  for (const r of rows) {
+    byProvider[String(r.provider).toLowerCase()] = Number(r.total) || 0;
   }
 
-  return { today, week, month, allTime, byProvider };
+  return {
+    today:    Number(totals.today)    || 0,
+    week:     Number(totals.week)     || 0,
+    month:    Number(totals.month)    || 0,
+    allTime:  Number(totals.alltime)  || 0,
+    byProvider,
+  };
 }
 
 // ─── Media Group Buffer (Multi-Photo Albums) ──────────────────────────────────
@@ -430,4 +461,20 @@ export async function clearMediaGroupItems(mediaGroupId) {
   await db.delete(mediaGroupBuffer)
     .where(eq(mediaGroupBuffer.mediaGroupId, String(mediaGroupId)))
     .run();
+}
+
+/**
+ * Remove exactly the rows a completed coordinator consumed. Rows inserted by
+ * lagging sibling updates (after the coordinator's last read) are left in the
+ * buffer so their own update can schedule them instead of losing them.
+ */
+export async function consumeMediaGroupItems(mediaGroupId, ids) {
+  for (const id of ids) {
+    await db.delete(mediaGroupBuffer)
+      .where(and(
+        eq(mediaGroupBuffer.id, id),
+        eq(mediaGroupBuffer.mediaGroupId, String(mediaGroupId)),
+      ))
+      .run();
+  }
 }

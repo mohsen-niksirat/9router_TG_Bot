@@ -20,6 +20,27 @@ export function escHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
+// Tags Telegram's createMessageHtml parse_mode accepts (attributes only on <a href>).
+const TG_ALLOWED_TAG =
+  /^<\/?(?:b|i|u|s|code|pre|blockquote|tg-spoiler)>$|^<a href="[^"<]{1,500}">$|^<\/a>$/;
+
+/**
+ * Sanitize model output for parse_mode: 'HTML'.
+ *
+ * Model replies routinely contain `<br>`, `3 < 4`, half-closed tags — the Bot
+ * API rejects those with HTTP 400 ("can't parse entities") instead of sending
+ * the message. Keeps Telegram-supported tags, escapes every other angle-bracket
+ * fragment, and normalizes stray ampersands to valid entities.
+ */
+export function sanitizeTelegramHtml(str) {
+  let s = String(str ?? '').replace(/&(?!(?:amp|lt|gt|quot|#39);)/g, '&amp;');
+  s = s.replace(/<[^>]*>?/g, (frag) => {
+    if (TG_ALLOWED_TAG.test(frag)) return frag;
+    return frag.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  });
+  return s;
+}
+
 // ─── Main Menu ────────────────────────────────────────────────────────────────
 export function mainMenuKeyboard(user, combo) {
   const comboLabel = combo ? `🔀 ${combo.name}` : '🔀 بدون کمبو';

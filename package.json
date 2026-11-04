@@ -8,7 +8,8 @@
     "migrate": "npx tgcloud migrate --safe",
     "status": "npx tgcloud status"
   },
-  "dependencies": {
-    "@tgcloud/cli": "latest"
+  "dependencies": {},
+  "devDependencies": {
+    "@tgcloud/cli": "^0.2.0"
   }
 }

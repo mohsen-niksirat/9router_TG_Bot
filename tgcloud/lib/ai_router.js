@@ -5,25 +5,32 @@
  */
 
 import { db, fetch } from 'sdk';
-import { eq, and, asc, sql } from 'sdk/db';
+import { eq, and, asc, notInArray, sql } from 'sdk/db';
 import { userKeys } from 'schema';
 import { decryptKey } from 'lib/crypto';
 import { markKeyResult, recordUsage } from 'lib/db';
+import { sleep } from 'lib/sleep';
 
 // ─── Key Selection ────────────────────────────────────────────────────────────
 
 /**
  * Picks the best available key for a given userId+providerSlug based on policy.
+ *
+ * `excludeIds` = keys already tried (and failed) in the current request — the
+ * fallback policy would otherwise sort them right back to the top because a
+ * plain 5xx leaves status='active', which used to abandon the provider after
+ * 3 retries on the SAME key instead of moving to key #2.
+ *
+ * Dead (401/403) and still-cooling keys are never force-resurrected anymore:
+ * if nothing is usable, the caller moves to the next provider / reports a
+ * clear error instead of hammering a broken key on every request.
  */
-export async function getNextKey(userId, providerSlug, policy = 'fallback') {
+export async function getNextKey(userId, providerSlug, policy = 'fallback', excludeIds = []) {
   const now = Math.floor(Date.now() / 1000);
 
-  // Build ordered query depending on policy
-  const baseCond = and(
-    eq(userKeys.userId, userId),
-    eq(userKeys.providerSlug, providerSlug),
-    eq(userKeys.status, 'active')
-  );
+  const common = [eq(userKeys.userId, userId), eq(userKeys.providerSlug, providerSlug)];
+  if (excludeIds.length) common.push(notInArray(userKeys.id, excludeIds));
+  const baseCond = and(...common, eq(userKeys.status, 'active'));
 
   let keyRow = null;
 
@@ -53,12 +60,7 @@ export async function getNextKey(userId, providerSlug, policy = 'fallback') {
   // If no active key, check cooldown expiry
   if (!keyRow) {
     const recovered = await db.select().from(userKeys)
-      .where(and(
-        eq(userKeys.userId, userId),
-        eq(userKeys.providerSlug, providerSlug),
-        eq(userKeys.status, 'cooldown'),
-        sql`cooldown_until <= ${now}`
-      ))
+      .where(and(...common, eq(userKeys.status, 'cooldown'), sql`cooldown_until <= ${now}`))
       .orderBy(asc(userKeys.sortOrder), asc(userKeys.id))
       .get();
 
@@ -68,22 +70,6 @@ export async function getNextKey(userId, providerSlug, policy = 'fallback') {
         .where(eq(userKeys.id, recovered.id))
         .run();
       keyRow = recovered;
-    }
-  }
-
-  // Last resort: reactivate oldest cooldown key so bot never hangs
-  if (!keyRow) {
-    const fallback = await db.select().from(userKeys)
-      .where(and(eq(userKeys.userId, userId), eq(userKeys.providerSlug, providerSlug)))
-      .orderBy(asc(userKeys.lastUsedAt))
-      .get();
-
-    if (fallback) {
-      await db.update(userKeys)
-        .set({ status: 'active', failureCount: 0, cooldownUntil: 0 })
-        .where(eq(userKeys.id, fallback.id))
-        .run();
-      keyRow = fallback;
     }
   }
 
@@ -423,6 +409,11 @@ async function callManus(apiKey, model, messages, maxTokens) {
     } catch (pollErr) {
       console.warn('[9Router] Manus check error:', pollErr);
     }
+
+    // Pace the polling: consecutive fired rounds used to hit Manus hundreds of
+    // times per chat (fast-fail rounds had no delay). ~2s cadence ≈ ≤12 polls
+    // over the 25s budget.
+    await sleep(2000);
   }
 
   // 5. Build final text with markdown image embeds
@@ -489,12 +480,14 @@ export async function routeChat({
   let lastError = null;
 
   for (const slug of providerSlugs) {
-    // Try up to 3 keys per provider before moving on
+    const triedKeys = [];
+    // Try up to 3 *distinct* keys per provider before moving on
     for (let attempt = 0; attempt < 3; attempt++) {
-      const keyRow = await getNextKey(userId, slug, routingPolicy);
+      const keyRow = await getNextKey(userId, slug, routingPolicy, triedKeys);
       if (!keyRow) break; // No keys for this provider
+      triedKeys.push(keyRow.id);
 
-      const plainKey = decryptKey(keyRow.apiKeyEnc, tgId);
+      const plainKey = await decryptKey(keyRow.apiKeyEnc, tgId);
 
       // Resolve candidate models: override → provider default → provider's registered models → fallback
       const provRow = providerRows.find((p) => p.slug === slug);

@@ -106,3 +106,23 @@ export const mediaGroupBuffer = table('media_group_buffer', {
 }, (t) => ({
   mgIdx: index('idx_mg_id').on(t.mediaGroupId),
 }));
+
+// ─── Chat Request Claims (duplicate suppression) ─────────────────────────────
+// The Mini App re-sends `chat` when a slow reply outlives its client timeout;
+// claiming (userId, fingerprint) before calling the AI keeps one message from
+// running — and billing — twice. Rows are consumed on completion; stale ones
+// are pruned opportunistically.
+export const chatClaims = table('chat_claims', {
+  id:          integer('id').primaryKey({ autoIncrement: true }),
+  userId:      integer('user_id').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  createdAt:   integer('created_at').default(sql`(unixepoch())`),
+}, (t) => ({
+  claimIdx: index('idx_claim_user').on(t.userId, t.createdAt),
+}));
+
+// ─── Config KV (per-install secrets, e.g. the key-encryption secret) ─────────
+export const config = table('config', {
+  key:   text('key').primaryKey(),
+  value: text('value'),
+}, () => ({}));
