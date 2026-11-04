@@ -15,7 +15,7 @@ import { withTimeout } from 'lib/sleep';
 // isolate, so withTimeout abandons the call instead of canceling it — and a
 // hung fetch used to stall the whole handler forever (stuck ⏳ placeholder).
 // Budgets measured live: CPU ≈ 3.0s/invoke, wall cap ∈ (25s, 30s].
-const PROVIDER_HOP_MS = 14000; // ladder: global(17s) >= hop(14s) >= create+poll(3s+10s)
+const PROVIDER_HOP_MS = 22000;
 
 // ─── Key Selection ────────────────────────────────────────────────────────────
 
@@ -230,7 +230,7 @@ function extractManusMediaUrls(obj, list, depth = 0) {
   }
 }
 
-const MANUS_TERMINAL_STATES = ['completed', 'stopped', 'waiting', 'failed', 'error'];
+const MANUS_TERMINAL_STATES = ['completed', 'stopped', 'failed', 'error'];
 
 /**
  * ONE read of a Manus task: task.listMessages + task.detail merged into a
@@ -310,7 +310,7 @@ export async function readManusTask(apiKey, taskId, prev) {
     mediaList,
     agentStatus,
     statusDetail,
-    done: MANUS_TERMINAL_STATES.includes(agentStatus),
+    done: MANUS_TERMINAL_STATES.includes(agentStatus) || (agentStatus === 'waiting' && statusDetail?.waiting_for_event_type && statusDetail.waiting_for_event_type !== 'cascadeJobCall'),
   };
 }
 
@@ -410,7 +410,7 @@ async function callManus(apiKey, model, messages, maxTokens) {
   let statusDetail = {};
   // Poll window stays under PROVIDER_HOP_MS/global 17s so this loop always
   // reaches the graceful fallback below (that alignment fixed the 17s bug).
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + 18000;
   let stillInFlight = false;
 
   while (Date.now() < deadline) {
@@ -434,7 +434,7 @@ async function callManus(apiKey, model, messages, maxTokens) {
   }
 
   // 5. Build final text with markdown image embeds
-  let finalContent = assistantText;
+  let finalContent = stillInFlight ? '⏳ <b>پردازش تصویر در مانوس در حال انجام است...</b>\n\nاین تسک شامل پردازش هوشمند تصویر است و معمولاً ۳۰ تا ۹۰ ثانیه زمان می‌برد.\nتصویر و خروجی نهایی مستقیماً در همین چت تلگرام برای شما ارسال خواهد شد:' : assistantText;
   const uniqueFiles = Array.from(new Set(mediaList));
   const imageMarkdown = uniqueFiles
     .map((u) => `![تصویر Manus](${u})`)
@@ -457,7 +457,7 @@ async function callManus(apiKey, model, messages, maxTokens) {
         `🔗 <a href="${taskUrl}">مشاهده زنده روند در وب‌سایت Manus</a>`;
     }
   } else {
-    finalContent += `\n\n🔗 <a href="${taskUrl}">مشاهده تسک در وب‌سایت Manus</a>`;
+    if (!stillInFlight) finalContent += `\n\n🔗 <a href="${taskUrl}">مشاهده تسک در وب‌سایت Manus</a>`;
   }
 
   return {
@@ -545,7 +545,7 @@ export async function routeChat({
               promptTokens:     result.promptTokens,
               completionTokens: result.completionTokens,
             }).catch(() => {});
-            return { text: result.text, provider: slug, model, usage: result };
+            return { text: result.text, provider: slug, model, usage: result, deferredTaskId: result.deferredTaskId };
           }
         } catch (err) {
           lastError = err;

@@ -1,4 +1,8 @@
-import { api } from 'sdk';
+import { api, db } from 'sdk';
+import { eq, and } from 'sdk/db';
+import { pendingTasks } from 'schema';
+import { readManusTask } from 'lib/ai_router';
+import { manusApiKeyFor, sendFullResult } from 'lib/manus_pending';
 import {
   getOrCreateUser,
   getUser,
@@ -86,6 +90,48 @@ async function handleCallback(query) {
         text: text.slice(0, 4096), parse_mode: parseMode, reply_markup: keyboard,
       });
     } catch {}
+  }
+
+  // ─── Manus Task Check ──────────────────────────────────────────────────────
+  if (data.startsWith('manus:check:')) {
+    const taskId = data.replace('manus:check:', '');
+    const apiKey = await manusApiKeyFor(user);
+    if (!apiKey) {
+      await api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: '❌ کلید API مانوس یافت نشد.',
+        show_alert: true,
+      });
+      return;
+    }
+
+    try {
+      const snap = await readManusTask(apiKey, taskId);
+      if (!snap.done && snap.agentStatus !== 'completed' && snap.agentStatus !== 'stopped') {
+        await api.answerCallbackQuery({
+          callback_query_id: query.id,
+          text: '⏳ هنوز در حال پردازش تصویر است... لطفاً چند ثانیه دیگر دکمه را لمس کنید.',
+          show_alert: true,
+        });
+        return;
+      }
+
+      await api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: '✅ خروجی آماده شد!',
+      });
+
+      await sendFullResult(chatId, taskId, snap);
+      await db.delete(pendingTasks).where(and(eq(pendingTasks.userId, user.id), eq(pendingTasks.taskId, taskId))).run();
+    } catch (err) {
+      console.warn('[9Router] manus check error:', err);
+      await api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: '⚠️ خطا در بررسی تسک.',
+        show_alert: true,
+      });
+    }
+    return;
   }
 
   // ─── Main Menu ─────────────────────────────────────────────────────────────

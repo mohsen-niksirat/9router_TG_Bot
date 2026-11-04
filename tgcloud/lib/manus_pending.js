@@ -40,7 +40,7 @@ export async function enqueuePendingTask(userId, chatId, taskId) {
   }
 }
 
-async function manusApiKeyFor(user) {
+export async function manusApiKeyFor(user) {
   const keys = await db.select().from(userKeys)
     .where(and(eq(userKeys.userId, user.id), eq(userKeys.providerSlug, 'manus')))
     .orderBy(asc(userKeys.sortOrder), asc(userKeys.id))
@@ -64,7 +64,7 @@ function collectImages(text) {
   return { images, cleaned };
 }
 
-async function sendFullResult(chatId, taskId, snap) {
+export async function sendFullResult(chatId, taskId, snap) {
   const rawText = (snap.assistantText || '').trim();
   const fromTask = Array.from(new Set(snap.mediaList || []))
     .filter((u) => typeof u === 'string' && u.startsWith('http'));
@@ -177,7 +177,13 @@ export async function deliverPendingTasks(user, chat) {
           continue;
         }
 
-        if (snap.agentStatus === 'failed' || snap.agentStatus === 'error' || snap.agentStatus === 'stopped') {
+        if (snap.assistantText || (snap.mediaList && snap.mediaList.length) || snap.agentStatus === 'completed' || snap.agentStatus === 'stopped') {
+          await sendFullResult(row.chatId, row.taskId, snap);
+          await db.delete(pendingTasks).where(eq(pendingTasks.id, row.id)).run();
+          continue;
+        }
+
+        if (snap.agentStatus === 'failed' || snap.agentStatus === 'error') {
           await api.sendMessage({
             chat_id: row.chatId,
             text:
@@ -188,10 +194,6 @@ export async function deliverPendingTasks(user, chat) {
           await db.delete(pendingTasks).where(eq(pendingTasks.id, row.id)).run();
           continue;
         }
-
-        // completed
-        await sendFullResult(row.chatId, row.taskId, snap);
-        await db.delete(pendingTasks).where(eq(pendingTasks.id, row.id)).run();
       } catch (e) {
         console.warn('[9Router] pending delivery attempt failed:', e);
         // row survives — the next update retries

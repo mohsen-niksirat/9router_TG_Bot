@@ -541,7 +541,7 @@ export default async function (message) {
   let finished = false;
   const watchdog = (async () => {
     const t0 = Date.now();
-    while (!finished && Date.now() - t0 < 16000) {
+    while (!finished && Date.now() - t0 < 23000) {
       await sleep(7000);
       if (finished) return;
       const seconds = Math.floor((Date.now() - t0) / 1000);
@@ -557,13 +557,11 @@ export default async function (message) {
   try {
     // Wall-cap of the platform is ∈ (25s, 30s] — 17s for the whole chat call
     // leaves room for the photo download above and the cleanup below.
-    const result = await withTimeout(sendChat(user, from.id, promptWithImages), 17000);
+    const result = await withTimeout(sendChat(user, from.id, promptWithImages), 24000);
 
-    // If the Manus task outran the sync window, queue deferred delivery: the
-    // full result (final images + text) will be pushed into this chat as soon
-    // as the task finishes, checked on every future update.
-    if (result && result.deferredTaskId) {
-      await enqueuePendingTask(user.id, chat.id, result.deferredTaskId);
+    const deferredTaskId = result?.deferredTaskId || result?.usage?.deferredTaskId;
+    if (deferredTaskId) {
+      await enqueuePendingTask(user.id, chat.id, deferredTaskId);
     }
     const footer = `\n\n<i>—— ${result.provider} / ${result.model}</i>`;
 
@@ -635,12 +633,21 @@ export default async function (message) {
 
     const fullText = sanitizeTelegramHtml(result.text) + footer;
 
+    const finalKeyboard = deferredTaskId
+      ? {
+          inline_keyboard: [
+            [{ text: '🔄 دریافت تصویر و نتیجه نهایی', callback_data: `manus:check:${deferredTaskId}` }],
+            [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
+          ],
+        }
+      : chatActionsKeyboard();
+
     await api.editMessageText({
       chat_id: chat.id,
       message_id: thinkMsg.message_id,
       text: fullText.slice(0, 4096),
       parse_mode: 'HTML',
-      reply_markup: chatActionsKeyboard(),
+      reply_markup: finalKeyboard,
     });
   } catch (err) {
     const timedOut = !!(err && err.isTimeout);
