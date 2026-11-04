@@ -57,14 +57,17 @@ export function mainMenuKeyboard(user, combo, key = null) {
       [{ text: '📱 مینی‌اپ چت', web_app: { url: miniAppUrl } }],
       [sessionBtn, { text: comboLabel, callback_data: 'a:combos' }],
       [
-        { text: '📋 پرامپت‌های من', callback_data: 'a:prompts' },
-        { text: '🔑 کلیدها', callback_data: 'a:keys' },
+        { text: '📜 آرشیو گفتگوها', callback_data: 'a:sessions' },
+        { text: '📋 پرامپت‌ها', callback_data: 'a:prompts' },
       ],
       [
+        { text: '🔑 کلیدها', callback_data: 'a:keys' },
         { text: '🌐 ارائه‌دهنده‌ها', callback_data: 'a:providers' },
-        { text: '📊 آمار توکن‌ها', callback_data: 'a:stats' },
       ],
-      [{ text: '❓ راهنما', callback_data: 'a:help' }],
+      [
+        { text: '📊 آمار توکن‌ها', callback_data: 'a:stats' },
+        { text: '❓ راهنما', callback_data: 'a:help' },
+      ],
     ],
   };
 }
@@ -122,11 +125,11 @@ export function mainReplyKeyboard(tgId, isSessionActive = false) {
   const rows = [];
   if (isSessionActive) {
     rows.push(['🛑 پایان مکالمه', '🔄 چت جدید']);
-    rows.push(['📋 پرامپت‌های من', '🔀 کمبوهای من']);
+    rows.push(['📜 آرشیو گفتگوها', '📋 پرامپت‌های من']);
   } else {
     rows.push(['💬 شروع چت جدید', '🔀 کمبوهای من']);
-    rows.push(['📋 پرامپت‌های من', '🔑 مدیریت کلیدها']);
-    rows.push(['🌐 ارائه‌دهنده‌ها', '📊 آمار توکن‌ها']);
+    rows.push(['📜 آرشیو گفتگوها', '📋 پرامپت‌های من']);
+    rows.push(['🔑 مدیریت کلیدها', '📊 آمار توکن‌ها']);
   }
   if (tgId) {
     rows.push([{ text: '📱 باز کردن مینی‌اپ چت (Mini App)', web_app: { url: buildMiniAppUrl(tgId) } }]);
@@ -377,8 +380,47 @@ export function chatActionsKeyboard(isSessionActive = true) {
     ]);
   }
   rows.push([
-    { text: '📋 پرامپت‌های من', callback_data: 'a:prompts' },
+    { text: '📜 آرشیو گفتگوها', callback_data: 'a:sessions' },
+    { text: '📋 پرامپت‌ها', callback_data: 'a:prompts' },
+  ]);
+  rows.push([
     { text: '🔙 منوی اصلی', callback_data: 'a:menu' },
   ]);
   return { inline_keyboard: rows };
+}
+
+// ─── Sessions Keyboards ───────────────────────────────────────────────────────
+export function sessionsKeyboard(sessionsList) {
+  const rows = [];
+  if (!sessionsList || sessionsList.length === 0) {
+    rows.push([{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }]);
+    rows.push([{ text: '🔙 منوی اصلی', callback_data: 'a:menu' }]);
+    return { inline_keyboard: rows };
+  }
+
+  for (const s of sessionsList) {
+    const titleSnippet = s.title.length > 28 ? `${s.title.slice(0, 26)}…` : s.title;
+    const taskTag = s.taskId ? ' ⚡[Manus]' : '';
+    rows.push([
+      { text: `📜 ${titleSnippet}${taskTag} (${s.messageCount || 0})`, callback_data: `ses:v:${s.id}` },
+    ]);
+  }
+
+  rows.push([
+    { text: '💬 شروع چت جدید', callback_data: 'a:new_chat' },
+    { text: '🔙 منوی اصلی', callback_data: 'a:menu' },
+  ]);
+  return { inline_keyboard: rows };
+}
+
+export function sessionDetailKeyboard(sessionId) {
+  return {
+    inline_keyboard: [
+      [{ text: '🔄 ادامه و فعال‌سازی این گفتگو', callback_data: `ses:res:${sessionId}` }],
+      [
+        { text: '🗑️ حذف گفتگو', callback_data: `ses:del:${sessionId}` },
+        { text: '🔙 لیست گفتگوها', callback_data: 'a:sessions' },
+      ],
+    ],
+  };
 }

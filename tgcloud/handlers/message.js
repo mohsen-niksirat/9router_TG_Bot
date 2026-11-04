@@ -31,6 +31,7 @@ import {
   isChatRequestCancelled,
   setGroupMuted,
   isGroupMuted,
+  getChatSessions,
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
@@ -51,6 +52,7 @@ import {
   promptsKeyboard,
   promptDetailKeyboard,
   newChatPickerKeyboard,
+  sessionsKeyboard,
 } from 'lib/keyboards';
 import { ROUTING_POLICIES } from 'lib/providers';
 
@@ -191,7 +193,7 @@ export default async function (message) {
     }
 
     // Protect private menus from leaking in groups
-    const privateCmds = ['/start', '/keys', '/combos', '/providers', '/stats', '/prompts', '/new'];
+    const privateCmds = ['/start', '/keys', '/combos', '/providers', '/stats', '/prompts', '/new', '/sessions', '/history'];
     if (privateCmds.some(cmd => text.startsWith(cmd))) {
       const botInfo = await getBotInfo();
       const botUser = botInfo?.username || 'NineRouterBot';
@@ -601,6 +603,22 @@ export default async function (message) {
     return;
   }
 
+  // ─── /sessions - Saved sessions archive ───────────────────────────────────
+  if (text === '/sessions' || text === '/history' || text === '📜 آرشیو گفتگوها') {
+    const list = await getChatSessions(user.id, 10);
+    await api.sendMessage({
+      chat_id: chat.id,
+      text:
+        `📜 <b>آرشیو گفتگوهای شما</b>\n\n` +
+        (list.length
+          ? `تعداد گفتگوهای ذخیره‌شده: <b>${list.length}</b>\n\nبرای مشاهده جزئیات، ادامه یا بازیابی هر گفتگو، روی آن کلیک فرمایید:`
+          : `هنوز هیچ گفتگوی ذخیره‌شده‌ای در آرشیو شما وجود ندارد.\nبا شروع چت جدید و تبادل پیام، گفتگوهای شما به طور خودکار آرشیو می‌شوند.`),
+      parse_mode: 'HTML',
+      reply_markup: sessionsKeyboard(list),
+    });
+    return;
+  }
+
   // ─── /keys ────────────────────────────────────────────────────────────────
   if (text === '/keys' || text === '🔑 مدیریت کلیدها') {
     const allKeys = await getKeys(user.id);
@@ -680,6 +698,7 @@ export default async function (message) {
         `/start — شروع / منوی اصلی\n` +
         `/new یا /chat — شروع گفتگوی پیوسته جدید\n` +
         `/end یا /stop — پایان مکالمه جاری\n` +
+        `/sessions — مشاهده و بازیابی آرشیو گفتگوها\n` +
         `/prompts — کتابخانه پرامپت‌های ذخیره‌شده\n` +
         `/keys — مدیریت کلیدهای API\n` +
         `/combos — مدیریت کمبوها\n` +

@@ -36,6 +36,10 @@ import {
   getSavedPromptById,
   deleteSavedPrompt,
   cancelChatRequest,
+  getChatSessions,
+  getChatSessionById,
+  deleteChatSession,
+  restoreChatSession,
 } from 'lib/db';
 import { sendChat } from 'lib/chat';
 import { decryptKey, maskKey } from 'lib/crypto';
@@ -61,6 +65,8 @@ import {
   promptsKeyboard,
   promptDetailKeyboard,
   newChatPickerKeyboard,
+  sessionsKeyboard,
+  sessionDetailKeyboard,
 } from 'lib/keyboards';
 
 export default async function (query) {
@@ -351,6 +357,70 @@ async function handleCallback(query) {
       `🗑️ پرامپت با موفقیت حذف شد.\n\n` +
       `تعداد پرامپت‌های باقیمانده: <b>${prompts.length}</b>`,
       promptsKeyboard(prompts)
+    );
+    return;
+  }
+
+  // ─── Sessions Archive & Switcher ───────────────────────────────────────────
+  if (data === 'a:sessions') {
+    const list = await getChatSessions(user.id, 10);
+    await edit(
+      `📜 <b>آرشیو گفتگوهای شما</b>\n\n` +
+      (list.length
+        ? `تعداد گفتگوهای ذخیره‌شده: <b>${list.length}</b>\n\nبرای مشاهده جزئیات، ادامه یا بازیابی هر گفتگو، روی آن کلیک کنید:`
+        : `هنوز هیچ گفتگوی ذخیره‌شده‌ای در آرشیو شما وجود ندارد.\nبا شروع چت جدید و تبادل پیام، گفتگوها به طور خودکار آرشیو می‌شوند.`),
+      sessionsKeyboard(list)
+    );
+    return;
+  }
+
+  if (data.startsWith('ses:v:')) {
+    const sId = parseInt(data.replace('ses:v:', ''), 10);
+    const session = await getChatSessionById(sId, user.id);
+    if (!session) {
+      await edit('❌ گفتگو یافت نشد.', backKeyboard('a:sessions'));
+      return;
+    }
+    const dt = new Date(session.updatedAt * 1000).toLocaleString('fa-IR');
+    await edit(
+      `📜 <b>گفتگو: ${escHtml(session.title)}</b>\n\n` +
+      `🤖 ارائه‌دهنده/مدل: <code>${escHtml(session.provider || 'نامشخص')} / ${escHtml(session.model || 'نامشخص')}</code>\n` +
+      `💬 تعداد پیام‌ها: <b>${session.messageCount || 0}</b>\n` +
+      (session.taskId ? `⚡ تسک مانوس: <code>${escHtml(session.taskId)}</code>\n` : '') +
+      `⏱ تاریخ: <code>${dt}</code>\n\n` +
+      `<i>💡 با انتخاب دکمه «ادامه و فعال‌سازی»، این گفتگو به همراه حافظه پیام‌های قبلی بارگذاری خواهد شد:</i>`,
+      sessionDetailKeyboard(sId)
+    );
+    return;
+  }
+
+  if (data.startsWith('ses:res:')) {
+    const sId = parseInt(data.replace('ses:res:', ''), 10);
+    const session = await restoreChatSession(sId, user.id);
+    if (!session) {
+      await edit('❌ گفتگو یافت نشد.', backKeyboard('a:sessions'));
+      return;
+    }
+    await edit(
+      `✅ <b>گفتگوی «${escHtml(session.title)}» با موفقیت فعال شد!</b>\n\n` +
+      `💬 تمام پیام‌های قبلی و تسک فعال در حافظه ربات قرار گرفتند. شما هم‌اکنون می‌توانید مکالمه را ادامه دهید:`,
+      chatActionsKeyboard(true)
+    );
+    await api.sendMessage({
+      chat_id: chatId,
+      text: '👇 نوار وضعیت گفتگو (چت فعال):',
+      reply_markup: mainReplyKeyboard(from.id, true),
+    }).catch(() => {});
+    return;
+  }
+
+  if (data.startsWith('ses:del:')) {
+    const sId = parseInt(data.replace('ses:del:', ''), 10);
+    await deleteChatSession(sId, user.id);
+    const list = await getChatSessions(user.id, 10);
+    await edit(
+      `🗑️ گفتگو با موفقیت از آرشیو حذف شد.\n\nتعداد گفتگوهای باقیمانده: <b>${list.length}</b>`,
+      sessionsKeyboard(list)
     );
     return;
   }

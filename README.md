@@ -36,10 +36,23 @@ Users can securely store their private API keys (encrypted at rest), organize ke
 
 ### 🚀 Key Features
 
-- **💬 Strict Chat Session Management (`/new`, `/chat`, `/end`, `/stop`):**
+- **💬 Strict Chat Session Management & Archive Switcher (`/new`, `/chat`, `/end`, `/sessions`):**
   - **Session Isolation:** In normal idle mode, the bot ignores stray inputs to prevent accidental token usage or cluttering external AI task dashboards.
   - **Continuous Dialogue:** Starting a session with `/new`, `/chat`, or inline buttons initiates an ongoing conversation where all follow-up messages and images are linked.
-  - **Graceful Closure:** Tapping `🛑 End Chat` (`/end` or `/stop`) resets the session and finalizes active tasks cleanly.
+  - **📜 Automatic Archive & Multi-Session Switcher:** Past conversations and Manus tasks are never lost — they are automatically archived into SQLite. Use `/sessions` or `📜 Session Archive` to browse, inspect, and resume previous conversations with complete context.
+  - **Graceful Closure:** Tapping `🛑 End Chat` (`/end` or `/stop`) archives the session and finalizes active tasks cleanly.
+- **📄 Code & Document File Analyzer:**
+  - Send scripts, source files, and datasets (`.py`, `.js`, `.ts`, `.json`, `.txt`, `.html`, `.css`, `.cpp`, `.java`, `.sql`, `.md`, `.csv`, `.log`, `.env`, etc. up to 512KB).
+  - Automatically decodes UTF-8 content and wraps it with appropriate language markdown syntax blocks for AI code analysis, debugging, and refactoring.
+- **❌ Live Request Cancellation & Ticker Watchdog:**
+  - Features a live `❌ Cancel Request` inline button on the "Processing..." indicator.
+  - Non-blocking CPU-safe watchdog ticks elapsed seconds every interval without consuming isolate execution budgets.
+  - Secure authorization ensures only the request initiator or group admin can cancel the pending task.
+- **👥 Group & Supergroup Intelligence & Admin Controls:**
+  - **Mention & Reply Detection:** The bot stays quiet in groups, only responding when explicitly tagged (`@bot`), replied to, or addressed with keywords (`bot `, `ai `, `ربات `, `روتر `).
+  - **Reply-to-User Analysis:** Tagging the bot in a reply to another member's code, text, or image prompts the AI to analyze that member's content with your instructions.
+  - **Privacy Guard:** Management commands (`/keys`, `/combos`, `/start`, `/providers`, `/sessions`, `/stats`) in groups redirect callers to private chat via an inline button to protect API credentials.
+  - **Admin Control Suite:** Group administrators can toggle bot silence (`/bot سکوت` / `/bot صحبت`), run health checks (`/bot test`), and view status.
 - **🎨 Deep Manus AI Integration & Direct In-Chat Media Delivery:**
   - **Multi-Turn Task Continuity:** Instead of creating dozens of separate tasks on the Manus dashboard, subsequent messages in a session leverage the official `POST /v2/task.sendMessage` endpoint to continue inside the existing task.
   - **Direct Telegram Image Delivery:** AI-generated images and assets are extracted from CDN URLs and delivered directly to your Telegram chat — no external browser visit required!
@@ -167,6 +180,7 @@ Send these commands to [@BotFather](https://t.me/BotFather):
 start - 🚀 شروع ربات و نمایش منوی اصلی
 new - 💬 شروع چت جدید (گفتگوی پیوسته)
 end - 🛑 پایان مکالمه جاری و بستن تسک
+sessions - 📜 مشاهده و بازیابی آرشیو گفتگوها
 prompts - 📋 کتابخانه پرامپت‌های ذخیره‌شده
 keys - 🔑 مدیریت و افزودن کلیدهای API
 combos - 🔀 ساخت و انتخاب کمبوهای ترکیبی
@@ -201,35 +215,51 @@ Configure the Web App button:
 
 ### ✨ قابلیت‌ها و امکانات برجسته
 
-1. **💬 مدیریت سشن و گفتگوی پیوسته (Chat Session Continuity):**
+1. **💬 مدیریت سشن، گفتگوی پیوسته و آرشیو هوشمند (Chat Session & Switcher):**
    - **قفل ورودی در حالت عادی:** برای جلوگیری از ایجاد تسک‌های ناخواسته و مصرف بیهوده توکن، پیام‌های عادی تا زمانی که چت فعال نباشد پردازش نمی‌شوند و ربات کاربر را برای باز کردن چت راهنمایی می‌کند.
    - **شروع چت با یک لمس:** با زدن دکمه‌ی «💬 شروع چت جدید» یا دستور `/new` / `/chat` یک سشن فعال باز می‌شود.
-   - **پایان تمیز مکالمه:** با زدن دکمه‌ی «🛑 پایان مکالمه» یا دستور `/end`، تسک جاری بسته شده و سشن بدون شلوغ کردن پنل هوش مصنوعی به اتمام می‌رسد.
+   - **📜 آرشیو و سوئیچر گفتگوها (`/sessions` یا `/history`):** با شروع چت جدید یا زدن پایان مکالمه، گفتگوها و تسک‌های مانوس به صورت خودکار در دیتابیس آرشیو می‌شوند. می‌توانید در هر زمان با دستور `/sessions` یا دکمه «📜 آرشیو گفتگوها» لیست سشن‌ها را ببینید و با یک لمس گفتگو را با تمام حافظه و تسک قبلی بازیابی و ادامه دهید.
+   - **پایان تمیز مکالمه:** با زدن دکمه‌ی «🛑 پایان مکالمه» یا دستور `/end`، سشن به صورت خودکار آرشیو شده و تسک جاری بسته می‌شود.
 
-2. **🎨 اتصال مستقیم به Manus AI و دریافت خروجی داخل تلگرام:**
+2. **📄 آنالیزور سورس‌کد و فایل‌های متنی (Code & Document Analyzer):**
+   - ارسال مستقیم فایل‌های سورس کد (`.py`, `.js`, `.ts`, `.json`, `.txt`, `.html`, `.css`, `.cpp`, `.java`, `.sql`, `.md`, `.csv`, `.log`, `.env` تا سقف ۵۱۲ کیلوبایت).
+   - استخراج محتوا و فرمت‌بندی هوشمند در بلاک‌های Markdown کد همراه با نام زبان برای ریفکتور، تحلیل خطاها و پاسخ جامع هوش مصنوعی.
+
+3. **❌ لغو زنده درخواست (Live Cancel) و تایمر ثانیه‌شمار واچ‌داگ:**
+   - دکمه شیشه‌ای «❌ لغو درخواست» روی پیام در حال پردازش.
+   - واچ‌داگ بهینه که ثانیه‌های سپری‌شده را به صورت بلادرنگ گزارش می‌دهد بدون اینکه منابع CPU سرورلس را بسوزاند.
+   - گیت امنیتی جهت اطمینان از اینکه فقط آغازکننده درخواست یا ادمین گروه حق لغو را دارد.
+
+4. **👥 هوش گروهی و سوپرگروه همراه با کنترل اختصاصی ادمین:**
+   - **پاسخ‌دهی هوشمند بر اساس منشن یا ریپلای:** در گروه‌ها ربات سکوت اختیار می‌کند و تنها در صورت تگ شدن (`@botname`)، ریپلای به پیام ربات، یا پیشوندهای `bot `، `ai `، `ربات `، `روتر ` پاسخ می‌دهد.
+   - **آنالیز ریپلای به پیام دیگران:** اگر پیام، تصویر یا فایل کد کاربری را ریپلای کرده و ربات را صدا بزنید، هوش مصنوعی محتوای پیام او را با دستور شما آنالیز می‌کند.
+   - **محافظت از حریم خصوصی کلیدها:** منوهای خصوصی (`/keys`، `/combos`، `/stats`، `/start`، `/sessions`) در گروه نمایش داده نمی‌شوند و با دکمه شیشه‌ای کاربر را به پیوی هدایت می‌کنند.
+   - **فرمان‌های مدیریتی ادمین گروه:** `/bot سکوت` (بی‌صدا کردن موقت ربات در گروه)، `/bot صحبت` (فعال‌سازی مجدد)، و `/bot test` (بررسی وضعیت اتصال).
+
+5. **🎨 اتصال مستقیم به Manus AI و دریافت خروجی داخل تلگرام:**
    - **ارسال به همان تسک قبلی (`task.sendMessage`):** بر خلاف روال معمول که هر پیام یک تسک جدید باز می‌کند، در این ربات تمامی پیام‌ها و تصاویر یک سشن به همان تسک قبلی مانوس ارسال می‌شوند تا فهرست تسک‌های وب‌سایت شلوغ نشود.
    - **تحویل مستقیم تصویر و متن در چت:** تصاویر تولیدشده توسط مانوس مستقیماً استخراج شده و به همراه کپشن کامل به چت تلگرام ارسال می‌گردند و نیازی به باز کردن سایت مانوس نیست.
    - **صف پس‌زمینه تسک‌های سنگین:** در صورت طولانی شدن پردازش، تسک در صف `pending_tasks` ذخیره شده و با دکمه‌ی شیشه‌ای `🔄 دریافت تصویر و نتیجه نهایی` یا با اولین پیام بعدی به صورت خودکار تحویل داده می‌شود.
 
-3. **🖼️ ارسال همزمان چند عکس (آلبوم) در قالب یک پیام:**
+6. **🖼️ ارسال همزمان چند عکس (آلبوم) در قالب یک پیام:**
    - پشتیبانی کامل از آلبوم‌های چندعکسی تلگرام (`media_group_id`).
    - می‌توانید چندین عکس (مثلاً عکس یک منظره و عکس قدی یک شخص) را با هم ارسال کرده و از مدل بخواهید آن‌ها را ادغام یا ویرایش کند؛ ربات تمام تصاویر را در قالب یک پیام یکپارچه به هوش مصنوعی تحویل می‌دهد.
 
-4. **📋 کتابخانه ثبت پرامپت دلخواه (حل محدودیت کپشن تلگرام):**
+7. **📋 کتابخانه ثبت پرامپت دلخواه (حل محدودیت کپشن تلگرام):**
    - تلگرام برای کپشن عکس‌ها محدودیت کاراکتر دارد؛ با استفاده از منوی «📋 پرامپت‌های من» یا دستور `/prompts` می‌توانید پرامپت‌های جامع و بسیار طولانی را با یک عنوان کوتاه (مثلاً `عکس گچی`) ذخیره کنید.
    - دفعه بعد هنگام ارسال عکس، کافی است عبارت `پرامپت عکس گچی` یا `#عکس گچی` را بنویسید؛ ربات متن کامل پرامپت را به طور خودکار جایگزین کرده و به مدل ارسال می‌کند.
 
-5. **🛡️ ۴ سیاست هوشمند مسیریابی و بالانس بار:**
+8. **🛡️ ۴ سیاست هوشمند مسیریابی و بالانس بار:**
    - **فالبک اولویتی (Priority Fallback):** تلاش با کلید اول؛ در صورت دریافت خطای `429`، `500` یا `404`، بلافاصله روی کلیدهای بعدی یا ارائه‌دهنده‌های جایگزین سوئیچ می‌کند.
    - **راند رابین (Round-Robin):** توزیع چرخشی درخواست‌ها بین کلیدهای فعال.
    - **روتر هوشمند (Smart Router):** ارزیابی درصد موفقیت کلیدها و هدایت درخواست به سالم‌ترین کلید.
    - **کمترین مصرف (Least Used):** انتخاب کلیدی با کمترین تعداد توکن مصرف‌شده.
 
-6. **🔐 گاوصندوق رمزنگاری‌شده کلیدها (Vault):**
+9. **🔐 گاوصندوق رمزنگاری‌شده کلیدها (Vault):**
    - کلیدها با کلید تصادفی منحصر‌به‌فرد سرور و IV مجزا به صورت رمزنگاری‌شده ذخیره می‌شوند و هرگز به صورت متن ساده در دیتابیس قرار نمی‌گیرند.
 
-7. **📱 مینی‌اپ تلگرام مدرن و دارک (RTL Mini App):**
-   - محیط چت تحت وب شیشه‌ای با دسترسی سریع به مدیریت کلیدها، ساخت کمبو، چت چندرسانه‌ای و گزارش آماری توکن‌ها.
+10. **📱 مینی‌اپ تلگرام مدرن و دارک (RTL Mini App):**
+    - محیط چت تحت وب شیشه‌ای با دسترسی سریع به مدیریت کلیدها، ساخت کمبو، چت چندرسانه‌ای و گزارش آماری توکن‌ها.
 
 ---
 

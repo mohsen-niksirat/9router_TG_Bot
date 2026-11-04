@@ -156,3 +156,21 @@ export const savedPrompts = table('saved_prompts', {
 }, (t) => ({
   userPromptIdx: index('idx_prompts_user').on(t.userId),
 }));
+
+// ─── Chat Sessions Archive ───────────────────────────────────────────────────
+export const chatSessions = table('chat_sessions', {
+  id:           integer('id').primaryKey({ autoIncrement: true }),
+  userId:       integer('user_id').notNull(),
+  title:        text('title').notNull(),
+  provider:     text('provider'),
+  model:        text('model'),
+  taskId:       text('task_id'),
+  comboId:      integer('combo_id'),
+  keyId:        integer('key_id'),
+  messageCount: integer('message_count').default(0),
+  messagesJson: text('messages_json'),
+  createdAt:    integer('created_at').default(sql`(unixepoch())`),
+  updatedAt:    integer('updated_at').default(sql`(unixepoch())`),
+}, (t) => ({
+  userSessionsIdx: index('idx_sessions_user').on(t.userId, t.updatedAt),
+}));

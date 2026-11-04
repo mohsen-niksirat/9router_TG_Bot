@@ -1,6 +1,6 @@
 import { db } from 'sdk';
 import { eq, and, desc, asc, sql } from 'sdk/db';
-import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer, savedPrompts, chatClaims, config } from 'schema';
+import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer, savedPrompts, chatClaims, config, chatSessions } from 'schema';
 import { encryptKey, decryptKey } from 'lib/crypto';
 import { BUILTIN_PROVIDERS } from 'lib/providers';
 
@@ -492,7 +492,184 @@ export async function consumeMediaGroupItems(mediaGroupId, ids) {
 }
 
 // ─── Chat Session Management ──────────────────────────────────────────────────
+export async function archiveCurrentSession(userId) {
+  try {
+    const user = await db.select().from(users).where(eq(users.id, userId)).get();
+    if (!user) return null;
+
+    const historyRows = await db.select()
+      .from(chatHistory)
+      .where(eq(chatHistory.userId, userId))
+      .orderBy(asc(chatHistory.createdAt))
+      .all();
+
+    if ((!historyRows || historyRows.length === 0) && !user.currentTaskId) {
+      return null;
+    }
+
+    const userMsgs = (historyRows || []).filter((r) => r.role === 'user');
+    let title = '';
+    if (userMsgs.length > 0) {
+      title = (userMsgs[0].content || '')
+        .replace(/\[Image:.*?\]/g, '')
+        .replace(/📄 محتوای فایل ضمیمه‌شده.*?\`\`\`/s, '')
+        .trim();
+      title = title.split('\n')[0].trim().slice(0, 45);
+    }
+    if (!title) {
+      title = user.currentTaskId
+        ? `تسک مانوس (${user.currentTaskId.slice(0, 8)})`
+        : `گفتگوی هوش مصنوعی (${new Date().toLocaleDateString('fa-IR')})`;
+    }
+
+    const lastAsst = [...(historyRows || [])].reverse().find((r) => r.role === 'assistant');
+    const provider = lastAsst?.provider || null;
+    const model = lastAsst?.model || null;
+
+    const messagesJson = JSON.stringify(
+      (historyRows || []).map((r) => ({
+        role: r.role,
+        content: r.content,
+        provider: r.provider || null,
+        model: r.model || null,
+        tokens: r.tokens || 0,
+      }))
+    );
+
+    const now = Math.floor(Date.now() / 1000);
+    const [created] = await db.insert(chatSessions).values({
+      userId,
+      title,
+      provider,
+      model,
+      taskId: user.currentTaskId || null,
+      comboId: user.activeComboId || null,
+      keyId: user.activeKeyId || null,
+      messageCount: historyRows.length,
+      messagesJson,
+      createdAt: now,
+      updatedAt: now,
+    }).returning().run();
+
+    // Prune old sessions beyond 25 per user
+    const userSessions = await db.select({ id: chatSessions.id })
+      .from(chatSessions)
+      .where(eq(chatSessions.userId, userId))
+      .orderBy(desc(chatSessions.updatedAt))
+      .all();
+
+    if (userSessions.length > 25) {
+      const dropIds = userSessions.slice(25).map((s) => s.id);
+      for (const dId of dropIds) {
+        await db.delete(chatSessions).where(eq(chatSessions.id, dId)).run();
+      }
+    }
+
+    return created;
+  } catch (err) {
+    console.warn('[9Router] archiveCurrentSession error:', err);
+    return null;
+  }
+}
+
+export async function getChatSessions(userId, limit = 10) {
+  try {
+    return await db.select({
+      id: chatSessions.id,
+      title: chatSessions.title,
+      provider: chatSessions.provider,
+      model: chatSessions.model,
+      taskId: chatSessions.taskId,
+      messageCount: chatSessions.messageCount,
+      updatedAt: chatSessions.updatedAt,
+      createdAt: chatSessions.createdAt,
+    })
+      .from(chatSessions)
+      .where(eq(chatSessions.userId, userId))
+      .orderBy(desc(chatSessions.updatedAt))
+      .limit(limit)
+      .all();
+  } catch (err) {
+    console.warn('[9Router] getChatSessions error:', err);
+    return [];
+  }
+}
+
+export async function getChatSessionById(sessionId, userId) {
+  try {
+    const sId = parseInt(sessionId, 10);
+    return await db.select()
+      .from(chatSessions)
+      .where(and(eq(chatSessions.id, sId), eq(chatSessions.userId, userId)))
+      .get();
+  } catch (err) {
+    console.warn('[9Router] getChatSessionById error:', err);
+    return null;
+  }
+}
+
+export async function deleteChatSession(sessionId, userId) {
+  try {
+    const sId = parseInt(sessionId, 10);
+    await db.delete(chatSessions)
+      .where(and(eq(chatSessions.id, sId), eq(chatSessions.userId, userId)))
+      .run();
+    return true;
+  } catch (err) {
+    console.warn('[9Router] deleteChatSession error:', err);
+    return false;
+  }
+}
+
+export async function restoreChatSession(sessionId, userId) {
+  const sId = parseInt(sessionId, 10);
+  const session = await getChatSessionById(sId, userId);
+  if (!session) return null;
+
+  // Archive current session first if active
+  await archiveCurrentSession(userId);
+
+  // Clear active chatHistory
+  await clearHistory(userId);
+
+  // Populate active chatHistory from session.messagesJson
+  if (session.messagesJson) {
+    try {
+      const msgs = JSON.parse(session.messagesJson);
+      for (const m of msgs) {
+        await db.insert(chatHistory).values({
+          userId,
+          role: m.role,
+          content: m.content,
+          provider: m.provider || null,
+          model: m.model || null,
+          tokens: m.tokens || 0,
+        }).run();
+      }
+    } catch (e) {
+      console.warn('[9Router] restoreChatSession json parse failed:', e);
+    }
+  }
+
+  // Reactivate session on user
+  const patch = {
+    chatSessionActive: 1,
+    currentTaskId: session.taskId || null,
+  };
+  if (session.keyId) {
+    patch.activeKeyId = session.keyId;
+    patch.activeComboId = null;
+  } else if (session.comboId) {
+    patch.activeComboId = session.comboId;
+    patch.activeKeyId = null;
+  }
+  await db.update(users).set(patch).where(eq(users.id, userId)).run();
+
+  return session;
+}
+
 export async function startChatSession(userId, { comboId = null, keyId = null } = {}) {
+  await archiveCurrentSession(userId);
   await clearHistory(userId);
   const patch = {
     chatSessionActive: 1,
@@ -509,6 +686,8 @@ export async function startChatSession(userId, { comboId = null, keyId = null } 
 }
 
 export async function endChatSession(userId) {
+  await archiveCurrentSession(userId);
+  await clearHistory(userId);
   await db.update(users).set({
     chatSessionActive: 0,
     currentTaskId: null,
