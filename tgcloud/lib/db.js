@@ -426,7 +426,8 @@ export async function getUsageStats(userId) {
 
   const byProvider = {};
   for (const r of rows) {
-    byProvider[String(r.provider).toLowerCase()] = Number(r.total) || 0;
+    const key = String(r.provider).toLowerCase();
+    byProvider[key] = (byProvider[key] || 0) + (Number(r.total) || 0); // merge, don't overwrite mixed-case rows
   }
 
   return {
