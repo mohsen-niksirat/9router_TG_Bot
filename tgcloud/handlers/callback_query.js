@@ -163,6 +163,16 @@ async function handleCallback(query) {
         text: '✅ خروجی آماده شد!',
       });
 
+      if (messageId) {
+        await api.editMessageText({
+          chat_id: chatId,
+          message_id: messageId,
+          text: '✅ <b>پردازش تصویر در مانوس تکمیل شد:</b>\nنتیجه در پیام زیر ارسال گردید 👇',
+          parse_mode: 'HTML',
+          reply_markup: chatActionsKeyboard(true),
+        }).catch(() => {});
+      }
+
       await sendFullResult(chatId, taskId, snap, apiKey);
       await db.delete(pendingTasks).where(and(eq(pendingTasks.userId, user.id), eq(pendingTasks.taskId, taskId))).run();
     } catch (err) {

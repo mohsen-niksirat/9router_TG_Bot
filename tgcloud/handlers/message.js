@@ -1179,7 +1179,7 @@ export default async function (message) {
   };
 
   const watchdog = (async () => {
-    while (!finished && Date.now() - t0 < 23000) {
+    while (!finished && Date.now() - t0 < 23500) {
       await sleep(isStreamEnabled ? 1400 : 5000);
       if (finished) return;
       const isCancelled = await isChatRequestCancelled(user.id, reqId);
@@ -1203,7 +1203,7 @@ export default async function (message) {
   })();
 
   try {
-    const result = await withTimeout(sendChat(user, from.id, promptWithImages, isStreamEnabled ? onStream : null), 24000);
+    const result = await withTimeout(sendChat(user, from.id, promptWithImages, isStreamEnabled ? onStream : null), 24500);
 
     if (await isChatRequestCancelled(user.id, reqId)) {
       return;
@@ -1236,7 +1236,9 @@ export default async function (message) {
           : chatActionsKeyboard(true));
 
     // 1. Collect all AI-generated or returned image URLs & clean description
-    const { images: generatedImages, cleanText: cleanDesc } = extractMediaAndCleanText(result.text);
+    const fromResult = Array.isArray(result?.mediaList) ? result.mediaList : [];
+    const { images: extractedImages, cleanText: cleanDesc } = extractMediaAndCleanText(result.text);
+    const generatedImages = Array.from(new Set([...fromResult, ...extractedImages]));
 
     // 2. Format description & update placeholder to display final text response with action buttons
     const descText = cleanDesc || '✅ پردازش هوش مصنوعی با موفقیت انجام شد.';

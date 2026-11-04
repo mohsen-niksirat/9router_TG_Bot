@@ -136,6 +136,19 @@ function utf8Decode(bytes) {
   return out;
 }
 
+/**
+ * Pure JS base64 decode to UTF-8 string (tgcloud V8 isolate has no Buffer / atob).
+ */
+export function base64DecodeString(str) {
+  try {
+    if (!str || typeof str !== 'string') return '';
+    const bytes = fromBase64(str);
+    return utf8Decode(bytes);
+  } catch {
+    return '';
+  }
+}
+
 function randBytes(n) {
   const b = new Uint8Array(n);
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {

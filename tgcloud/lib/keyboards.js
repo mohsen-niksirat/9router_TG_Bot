@@ -63,8 +63,8 @@ export function extractMediaAndCleanText(rawText) {
     'googleusercontent.com',
   ];
 
-  // 1. Matches markdown links and images: [title](url) or ![title](url)
-  const mdLinkRegex = /!?\[([^\]]*)\]\((https?:\/\/[^\s\)]+|\/[^\)]+)\)/g;
+  // 1. Matches markdown links and images: [title](url) or [title] (url) or [title](<url>)
+  const mdLinkRegex = /!?\[([^\]]*)\]\s*\(\s*<?(https?:\/\/[^\s\)>]+|\/[^\)>]+)>?\s*\)/g;
   for (const m of rawText.matchAll(mdLinkRegex)) {
     const label = (m[1] || '').toLowerCase();
     const url = m[2];
@@ -105,20 +105,25 @@ export function extractMediaAndCleanText(rawText) {
   let cleanText = rawText;
 
   // Remove markdown links that point to images or local sandbox paths
-  cleanText = cleanText.replace(/!?\[([^\]]*)\]\((https?:\/\/[^\s\)]+|\/[^\)]+)\)/g, (fullMatch, label, url) => {
-    if (foundUrls.has(url) || url.startsWith('/home/ubuntu') || url.startsWith('/tmp')) return '';
+  cleanText = cleanText.replace(/!?\[([^\]]*)\]\s*\(\s*<?(https?:\/\/[^\s\)>]+|\/[^\)>]+)>?\s*\)/g, (fullMatch, label, url) => {
+    const u = url.toLowerCase();
+    if (foundUrls.has(url) || url.startsWith('/home/ubuntu') || url.startsWith('/tmp') || fileHostHints.some((h) => u.includes(h))) {
+      return '';
+    }
     return fullMatch;
   });
 
-  // Remove standalone bare image URLs
+  // Remove standalone bare image URLs and presigned S3 hosts
   for (const imgUrl of images) {
     cleanText = cleanText.split(imgUrl).join('');
   }
+  cleanText = cleanText.replace(/https?:\/\/[^\s\)\"\'<>]*(?:manuscdn\.com|files\.manus|amazonaws\.com|s3\.)[^\s\)\"\'<>]*/gi, '');
 
   // Clean common phrases left behind and remove lone stray brackets
   cleanText = cleanText
     .replace(/(?:دانلود\s+(?:تصویر|عکس|فایل)[^\n:]*[:：]?)/gi, '')
-    .replace(/\[(?:تصویر|عکس)[^\]]*\]/gi, '')
+    .replace(/(?:Download\s+(?:the\s+)?(?:chalk-art\s+)?(?:portrait|image|file|photo)[^\n:]*[:：]?)/gi, '')
+    .replace(/\[(?:تصویر|عکس|دانلود|download)[^\]]*\]/gi, '')
     .replace(/^\s*\[\s*$/gm, '')
     .replace(/\[\s*$/g, '')
     .replace(/\n{3,}/g, '\n\n')

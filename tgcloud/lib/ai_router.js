@@ -15,7 +15,7 @@ import { withTimeout } from 'lib/sleep';
 // isolate, so withTimeout abandons the call instead of canceling it — and a
 // hung fetch used to stall the whole handler forever (stuck ⏳ placeholder).
 // Budgets measured live: CPU ≈ 3.0s/invoke, wall cap ∈ (25s, 30s].
-const PROVIDER_HOP_MS = 22000;
+const PROVIDER_HOP_MS = 23500;
 
 // ─── Key Selection ────────────────────────────────────────────────────────────
 
@@ -525,10 +525,12 @@ async function callManus(apiKey, model, messages, maxTokens, existingTaskId = nu
   let mediaList = [];
   let agentStatus = 'running';
   let statusDetail = {};
-  // The serverless invocation has a strict execution window. We cap callManus at
-  // 13 seconds total so it ALWAYS gracefully returns the pending task before any
-  // outer timeout (22s) can kill it.
-  const deadline = callStartTime + 13000;
+  // The serverless invocation has a strict execution window (~25s-28s max).
+  // We cap callManus polling at 21.5 seconds total so that:
+  // 1) Fast & typical tasks (10s - 20s) complete synchronously and deliver
+  //    photos/documents automatically without requiring user to press any button!
+  // 2) Slower tasks gracefully return before the outer PROVIDER_HOP_MS (23.5s) timeout.
+  const deadline = callStartTime + 21500;
   let stillInFlight = false;
 
   while (Date.now() < deadline) {
@@ -562,16 +564,11 @@ async function callManus(apiKey, model, messages, maxTokens, existingTaskId = nu
     // busy-spin: HTML-date-free CPU budget of the isolate is ~3.0s/invoke).
   }
 
-  // 5. Build final text with markdown image embeds
-  let finalContent = stillInFlight ? '⏳ <b>پردازش تصویر در مانوس در حال انجام است...</b>\n\nاین تسک شامل پردازش هوشمند تصویر است و معمولاً ۳۰ تا ۹۰ ثانیه زمان می‌برد.\nتصویر و خروجی نهایی مستقیماً در همین چت تلگرام برای شما ارسال خواهد شد:' : assistantText;
-  const uniqueFiles = Array.from(new Set(mediaList));
-  const imageMarkdown = uniqueFiles
-    .map((u) => `![تصویر Manus](${u})`)
-    .join('\n\n');
-
-  if (imageMarkdown) {
-    finalContent = finalContent ? `${finalContent}\n\n${imageMarkdown}` : imageMarkdown;
-  }
+  // 5. Build final text & clean media list
+  const uniqueFiles = Array.from(new Set(mediaList)).filter((u) => typeof u === 'string' && u.startsWith('http'));
+  let finalContent = stillInFlight
+    ? '⏳ <b>پردازش تصویر در مانوس در حال انجام است...</b>\n\nاین تسک شامل پردازش هوشمند تصویر است و معمولاً ۳۰ تا ۹۰ ثانیه زمان می‌برد.\nتصویر و خروجی نهایی مستقیماً در همین چت تلگرام برای شما ارسال خواهد شد:'
+    : assistantText;
 
   if (!finalContent) {
     if (agentStatus === 'waiting') {
@@ -586,17 +583,20 @@ async function callManus(apiKey, model, messages, maxTokens, existingTaskId = nu
         `🔗 <a href="${taskUrl}">مشاهده زنده روند در وب‌سایت Manus</a>`;
     }
   } else {
-    if (!stillInFlight) finalContent += `\n\n🔗 <a href="${taskUrl}">مشاهده تسک در وب‌سایت Manus</a>`;
+    if (!stillInFlight && taskUrl) {
+      finalContent += `\n\n🔗 <a href="${taskUrl}">مشاهده تسک در وب‌سایت Manus</a>`;
+    }
   }
 
   return {
     text: finalContent,
+    mediaList: uniqueFiles,
     promptTokens: 120,
     completionTokens: 250,
     totalTokens: 370,
     taskId,
     // Task outran the sync window -> the message handler queues deferred
-    // delivery; results arrive in-chat on the user's next update.
+    // delivery; results arrive in-chat on the user's next update or check click.
     ...(stillInFlight ? { deferredTaskId: taskId } : {}),
   };
 }

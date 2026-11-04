@@ -14,7 +14,7 @@
 import { db, api, fetch, InputFile } from 'sdk';
 import { eq, and, asc } from 'sdk/db';
 import { pendingTasks, userKeys } from 'schema';
-import { decryptKey } from 'lib/crypto';
+import { decryptKey, base64DecodeString } from 'lib/crypto';
 import { readManusTask } from 'lib/ai_router';
 import { withTimeout } from 'lib/sleep';
 import { sanitizeTelegramHtml, extractMediaAndCleanText } from 'lib/keyboards';
@@ -69,13 +69,15 @@ export function getCleanFileName(url, defaultName = 'output.png') {
     const rawName = decodeURIComponent(url.split('?')[0].split('/').pop() || defaultName);
     // Decode base64 paths like _L2hvbWUvdWJ1bnR1L2VuaGFuY2VkX2hvcml6b250YWxfcGhvdG8.png
     // (which is /home/ubuntu/enhanced_horizontal_photo)
-    const b64Match = rawName.match(/_([A-Za-z0-9+/=]{16,})\.(png|jpe?g|webp|gif)/i);
+    const b64Match = rawName.match(/([A-Za-z0-9+/=]{16,})\.(png|jpe?g|webp|gif)/i);
     if (b64Match) {
       try {
-        const decoded = Buffer.from(b64Match[1], 'base64').toString('utf-8');
-        const cleanBase = decoded.split('/').pop();
-        if (cleanBase && /^[a-zA-Z0-9_\-\.]+$/.test(cleanBase)) {
-          return `${cleanBase}.${b64Match[2].toLowerCase()}`;
+        const decoded = base64DecodeString(b64Match[1]);
+        if (decoded && (decoded.includes('/') || decoded.includes('\\'))) {
+          const cleanBase = decoded.split(/[/\\]/).pop().trim();
+          if (cleanBase && /^[a-zA-Z0-9_\-\.\s]+$/.test(cleanBase)) {
+            return `${cleanBase}.${b64Match[2].toLowerCase()}`;
+          }
         }
       } catch {}
     }
