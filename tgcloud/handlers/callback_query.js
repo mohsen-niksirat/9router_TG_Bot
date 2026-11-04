@@ -30,6 +30,11 @@ import {
   parseCombo,
   clearHistory,
   getUsageStats,
+  startChatSession,
+  endChatSession,
+  getSavedPrompts,
+  getSavedPromptById,
+  deleteSavedPrompt,
 } from 'lib/db';
 import { sendChat } from 'lib/chat';
 import { decryptKey, maskKey } from 'lib/crypto';
@@ -52,6 +57,8 @@ import {
   wizardComboProviderPickerKeyboard,
   chatActionsKeyboard,
   backKeyboard,
+  promptsKeyboard,
+  promptDetailKeyboard,
 } from 'lib/keyboards';
 
 export default async function (query) {
@@ -162,15 +169,92 @@ async function handleCallback(query) {
 
   // ─── New Chat ──────────────────────────────────────────────────────────────
   if (data === 'a:new_chat') {
-    await clearHistory(user.id);
+    await startChatSession(user.id);
     const comboRaw = await getActiveCombo(user);
     const combo = parseCombo(comboRaw);
     await edit(
-      `💬 <b>چت جدید شروع شد!</b> تاریخچه پاک شد.\n\n` +
+      `💬 <b>گفتگوی جدید آغاز شد!</b>\n\n` +
       (combo
-        ? `🔀 کمبوی فعال: <b>${escHtml(combo.name)}</b>\n<i>حالا پیامت رو بنویس...</i>`
+        ? `🔀 کمبوی فعال: <b>${escHtml(combo.name)}</b>\n\n` +
+          `<i>💡 پیام یا عکس‌های خود را ارسال فرمایید. تمامی پیام‌ها تا زمان زدن «🛑 پایان مکالمه» در همین گفتگو پیگیری می‌شوند.</i>`
         : `⚠️ کمبویی انتخاب نشده! از منوی کمبوها یک کمبو فعال کن.`),
       chatActionsKeyboard()
+    );
+    await api.sendMessage({
+      chat_id: chatId,
+      text: '👇 نوار وضعیت گفتگو (چت فعال):',
+      reply_markup: mainReplyKeyboard(from.id, true),
+    }).catch(() => {});
+    return;
+  }
+
+  // ─── End Chat Session ───────────────────────────────────────────────────────
+  if (data === 'a:end_chat') {
+    await endChatSession(user.id);
+    const comboRaw = await getActiveCombo(user);
+    const combo = parseCombo(comboRaw);
+    await edit(
+      `🛑 <b>گفتگو به پایان رسید.</b>\n\n` +
+      `برای شروع گفتگوی جدید، روی «💬 شروع چت جدید» بزنید.`,
+      mainMenuKeyboard(user, combo)
+    );
+    await api.sendMessage({
+      chat_id: chatId,
+      text: '👇 منوی اصلی:',
+      reply_markup: mainReplyKeyboard(from.id, false),
+    }).catch(() => {});
+    return;
+  }
+
+  // ─── Saved Prompts ──────────────────────────────────────────────────────────
+  if (data === 'a:prompts') {
+    const prompts = await getSavedPrompts(user.id);
+    await edit(
+      `📋 <b>پرامپت‌های ذخیره‌شده شما</b>\n\n` +
+      (prompts.length
+        ? `تعداد پرامپت‌ها: <b>${prompts.length}</b>\n\n💡 برای استفاده در چت، کافیست در متن یا کپشن عکس عبارت <code>پرامپت [نام]</code> یا <code>#[نام]</code> را بنویسید.`
+        : `هنوز پرامپتی ذخیره نکرده‌اید! با دکمه زیر می‌توانید پرامپت دلخواه خود را ثبت کنید.`),
+      promptsKeyboard(prompts)
+    );
+    return;
+  }
+
+  if (data === 'prm:new') {
+    await setWizard(from.id, 'prompt:title');
+    await edit(
+      `📝 <b>افزودن پرامپت جدید</b>\n\n` +
+      `لطفاً یک <b>عنوان یا کلیدواژه کوتاه</b> برای این پرامپت ارسال فرمایید:\n` +
+      `<i>مثال: عکس گچی</i>`,
+      backKeyboard('a:prompts')
+    );
+    return;
+  }
+
+  if (data.startsWith('prm:view:')) {
+    const promptId = parseInt(data.replace('prm:view:', ''), 10);
+    const p = await getSavedPromptById(promptId, user.id);
+    if (!p) {
+      await edit('❌ پرامپت یافت نشد.', backKeyboard('a:prompts'));
+      return;
+    }
+    await edit(
+      `📝 <b>پرامپت: ${escHtml(p.title)}</b>\n\n` +
+      `<code>${escHtml(p.prompt)}</code>\n\n` +
+      `<i>💡 نحوه استفاده در چت:</i>\n` +
+      `ارسال همراه عکس با کپشن <code>پرامپت ${escHtml(p.title)}</code>`,
+      promptDetailKeyboard(promptId)
+    );
+    return;
+  }
+
+  if (data.startsWith('prm:del:')) {
+    const promptId = parseInt(data.replace('prm:del:', ''), 10);
+    await deleteSavedPrompt(promptId, user.id);
+    const prompts = await getSavedPrompts(user.id);
+    await edit(
+      `🗑️ پرامپت با موفقیت حذف شد.\n\n` +
+      `تعداد پرامپت‌های باقیمانده: <b>${prompts.length}</b>`,
+      promptsKeyboard(prompts)
     );
     return;
   }

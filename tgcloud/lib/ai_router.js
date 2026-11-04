@@ -318,7 +318,7 @@ export async function readManusTask(apiKey, taskId, prev) {
  * Manus AI via official API v2 async task system.
  * Docs: https://open.manus.ai/docs/v2/introduction
  */
-async function callManus(apiKey, model, messages, maxTokens) {
+async function callManus(apiKey, model, messages, maxTokens, existingTaskId = null) {
   // 1. Resolve agent profile (standard | lite | max)
   let profile = 'standard';
   const m = (model || '').toLowerCase();
@@ -371,36 +371,66 @@ async function callManus(apiKey, model, messages, maxTokens) {
     contentParts.push(att);
   }
 
-  // 3. Create Task (POST /v2/task.create)
-  const createPayload = {
-    message: { content: contentParts },
-    agent_profile: profile,
-    hide_in_task_list: false,
-    interactive_mode: false,
-  };
+  let taskId = existingTaskId;
+  let taskUrl = taskId ? `https://manus.im/app/${taskId}` : '';
 
-  const createRes = await fetch('https://api.manus.ai/v2/task.create', {
-    method: 'POST',
-    headers: {
-      'x-manus-api-key': apiKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(createPayload),
-  });
+  if (taskId) {
+    // Multi-turn: Send follow-up to the existing task! (POST /v2/task.sendMessage)
+    const sendPayload = {
+      task_id: taskId,
+      message: { content: contentParts },
+    };
+    try {
+      const sendRes = await fetch('https://api.manus.ai/v2/task.sendMessage', {
+        method: 'POST',
+        headers: {
+          'x-manus-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(sendPayload),
+      });
 
-  if (!createRes.ok) {
-    const errText = await createRes.text();
-    const err = new Error(`Manus task.create ${createRes.status}: ${errText.slice(0, 200)}`);
-    err.status = createRes.status;
-    throw err;
+      if (!sendRes.ok) {
+        console.warn(`[9Router] task.sendMessage failed on task ${taskId}, falling back to task.create`);
+        taskId = null;
+      }
+    } catch {
+      taskId = null;
+    }
   }
 
-  const createData = await createRes.json();
-  const taskId = createData.task_id || createData.data?.task_id;
-  const taskUrl = createData.task_url || createData.data?.task_url || `https://manus.im/app/${taskId}`;
-
   if (!taskId) {
-    throw new Error('Manus API did not return a valid task_id.');
+    // 3. Create Task (POST /v2/task.create)
+    const createPayload = {
+      message: { content: contentParts },
+      agent_profile: profile,
+      hide_in_task_list: false,
+      interactive_mode: false,
+    };
+
+    const createRes = await fetch('https://api.manus.ai/v2/task.create', {
+      method: 'POST',
+      headers: {
+        'x-manus-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(createPayload),
+    });
+
+    if (!createRes.ok) {
+      const errText = await createRes.text();
+      const err = new Error(`Manus task.create ${createRes.status}: ${errText.slice(0, 200)}`);
+      err.status = createRes.status;
+      throw err;
+    }
+
+    const createData = await createRes.json();
+    taskId = createData.task_id || createData.data?.task_id;
+    taskUrl = createData.task_url || createData.data?.task_url || `https://manus.im/app/${taskId}`;
+
+    if (!taskId) {
+      throw new Error('Manus API did not return a valid task_id.');
+    }
   }
 
   // 4. Poll task execution & retrieve assistant output
@@ -465,6 +495,7 @@ async function callManus(apiKey, model, messages, maxTokens) {
     promptTokens: 120,
     completionTokens: 250,
     totalTokens: 370,
+    taskId,
     // Task outran the sync window -> the message handler queues deferred
     // delivery; results arrive in-chat on the user's next update.
     ...(stillInFlight ? { deferredTaskId: taskId } : {}),
@@ -496,6 +527,7 @@ export async function routeChat({
   modelOverrides = {},
   providerRows = [],
   maxTokens = 1024,
+  existingTaskId = null,
 }) {
   let lastError = null;
 
@@ -528,7 +560,7 @@ export async function routeChat({
           if (slug === 'gemini') {
             result = await withTimeout(callGemini(plainKey, model, messages, maxTokens), PROVIDER_HOP_MS);
           } else if (slug === 'manus') {
-            result = await withTimeout(callManus(plainKey, model, messages, maxTokens), PROVIDER_HOP_MS);
+            result = await withTimeout(callManus(plainKey, model, messages, maxTokens, existingTaskId), PROVIDER_HOP_MS);
           } else {
             const baseUrl = provRow?.baseUrl || 'https://api.openai.com/v1';
             result = await withTimeout(callOpenAICompat(baseUrl, plainKey, model, messages, maxTokens), PROVIDER_HOP_MS);
@@ -545,7 +577,7 @@ export async function routeChat({
               promptTokens:     result.promptTokens,
               completionTokens: result.completionTokens,
             }).catch(() => {});
-            return { text: result.text, provider: slug, model, usage: result, deferredTaskId: result.deferredTaskId };
+            return { text: result.text, provider: slug, model, usage: result, taskId: result.taskId, deferredTaskId: result.deferredTaskId };
           }
         } catch (err) {
           lastError = err;

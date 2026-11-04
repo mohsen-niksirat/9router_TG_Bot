@@ -45,36 +45,68 @@ export function sanitizeTelegramHtml(str) {
 // ─── Main Menu ────────────────────────────────────────────────────────────────
 export function mainMenuKeyboard(user, combo) {
   const comboLabel = combo ? `🔀 ${combo.name}` : '🔀 بدون کمبو';
+  const sessionBtn = user?.chatSessionActive
+    ? { text: '🛑 پایان مکالمه', callback_data: 'a:end_chat' }
+    : { text: '💬 شروع چت جدید', callback_data: 'a:new_chat' };
   const miniAppUrl = buildMiniAppUrl(user?.tgId || 0);
   return {
     inline_keyboard: [
       [{ text: '📱 مینی‌اپ چت', web_app: { url: miniAppUrl } }],
-      [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
-      [{ text: comboLabel, callback_data: 'a:combos' }],
+      [sessionBtn, { text: comboLabel, callback_data: 'a:combos' }],
       [
+        { text: '📋 پرامپت‌های من', callback_data: 'a:prompts' },
         { text: '🔑 کلیدها', callback_data: 'a:keys' },
-        { text: '🌐 ارائه‌دهنده‌ها', callback_data: 'a:providers' },
       ],
       [
+        { text: '🌐 ارائه‌دهنده‌ها', callback_data: 'a:providers' },
         { text: '📊 آمار توکن‌ها', callback_data: 'a:stats' },
-        { text: '❓ راهنما', callback_data: 'a:help' },
       ],
+      [{ text: '❓ راهنما', callback_data: 'a:help' }],
     ],
   };
 }
 
-export function mainReplyKeyboard(tgId) {
+export function mainReplyKeyboard(tgId, isSessionActive = false) {
   const rows = [];
+  if (isSessionActive) {
+    rows.push(['🛑 پایان مکالمه', '🔄 چت جدید']);
+    rows.push(['📋 پرامپت‌های من', '🔀 کمبوهای من']);
+  } else {
+    rows.push(['💬 شروع چت جدید', '🔀 کمبوهای من']);
+    rows.push(['📋 پرامپت‌های من', '🔑 مدیریت کلیدها']);
+    rows.push(['🌐 ارائه‌دهنده‌ها', '📊 آمار توکن‌ها']);
+  }
   if (tgId) {
     rows.push([{ text: '📱 باز کردن مینی‌اپ چت (Mini App)', web_app: { url: buildMiniAppUrl(tgId) } }]);
   }
-  rows.push(['💬 چت با هوش مصنوعی', '🔀 کمبوهای من']);
-  rows.push(['🔑 مدیریت کلیدها', '🌐 ارائه‌دهنده‌ها']);
-  rows.push(['📊 آمار توکن‌ها', '❓ راهنما']);
   return {
     keyboard: rows,
     resize_keyboard: true,
     persistent: true,
+  };
+}
+
+// ─── Saved Prompts Keyboards ──────────────────────────────────────────────────
+export function promptsKeyboard(prompts) {
+  const rows = [
+    [{ text: '➕ افزودن پرامپت جدید', callback_data: 'prm:new' }],
+  ];
+  for (const p of prompts) {
+    rows.push([
+      { text: `📝 ${p.title}`, callback_data: `prm:view:${p.id}` },
+      { text: '🗑️ حذف', callback_data: `prm:del:${p.id}` },
+    ]);
+  }
+  rows.push([{ text: '🔙 بازگشت به منو', callback_data: 'a:menu' }]);
+  return { inline_keyboard: rows };
+}
+
+export function promptDetailKeyboard(promptId) {
+  return {
+    inline_keyboard: [
+      [{ text: '🗑️ حذف این پرامپت', callback_data: `prm:del:${promptId}` }],
+      [{ text: '🔙 بازگشت به پرامپت‌ها', callback_data: 'a:prompts' }],
+    ],
   };
 }
 
@@ -280,14 +312,21 @@ export function wizardComboProviderPickerKeyboard(providers, selected) {
 }
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
-export function chatActionsKeyboard() {
-  return {
-    inline_keyboard: [
-      [
-        { text: '🔄 پیام جدید', callback_data: 'a:new_chat' },
-        { text: '🗑️ پاک کردن تاریخچه', callback_data: 'a:clear_history' },
-      ],
-      [{ text: '🔙 منوی اصلی', callback_data: 'a:menu' }],
-    ],
-  };
+export function chatActionsKeyboard(isSessionActive = true) {
+  const rows = [];
+  if (isSessionActive) {
+    rows.push([
+      { text: '🛑 پایان مکالمه', callback_data: 'a:end_chat' },
+      { text: '🔄 چت جدید', callback_data: 'a:new_chat' },
+    ]);
+  } else {
+    rows.push([
+      { text: '💬 شروع چت جدید', callback_data: 'a:new_chat' },
+    ]);
+  }
+  rows.push([
+    { text: '📋 پرامپت‌های من', callback_data: 'a:prompts' },
+    { text: '🔙 منوی اصلی', callback_data: 'a:menu' },
+  ]);
+  return { inline_keyboard: rows };
 }

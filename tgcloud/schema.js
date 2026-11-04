@@ -6,10 +6,12 @@ export const users = table('users', {
   tgId:          integer('tg_id').unique().notNull(),
   name:          text('name'),
   username:      text('username'),
-  activeComboId: integer('active_combo_id'),   // FK → combos.id (null = no combo selected)
-  wizardState:   text('wizard_state').default('idle'),
-  wizardData:    text('wizard_data'),           // JSON context for multi-step wizards
-  createdAt:     integer('created_at').default(sql`(unixepoch())`),
+  activeComboId:     integer('active_combo_id'),   // FK → combos.id (null = no combo selected)
+  wizardState:       text('wizard_state').default('idle'),
+  wizardData:        text('wizard_data'),           // JSON context for multi-step wizards
+  chatSessionActive: integer('chat_session_active').default(0), // 1 = active continuous conversation session
+  currentTaskId:     text('current_task_id'),       // active Manus task ID for multi-turn task.sendMessage
+  createdAt:         integer('created_at').default(sql`(unixepoch())`),
 }, (t) => ({
   tgIdx: index('idx_users_tg').on(t.tgId),
 }));
@@ -140,4 +142,16 @@ export const pendingTasks = table('pending_tasks', {
   createdAt: integer('created_at').default(sql`(unixepoch())`),
 }, (t) => ({
   pendIdx: index('idx_pending_user').on(t.userId, t.createdAt),
+}));
+
+// ─── Saved Prompts ───────────────────────────────────────────────────────────
+// User's custom saved prompt library (e.g. "عکس گچی" with full long prompt)
+export const savedPrompts = table('saved_prompts', {
+  id:        integer('id').primaryKey({ autoIncrement: true }),
+  userId:    integer('user_id').notNull(),
+  title:     text('title').notNull(),
+  prompt:    text('prompt').notNull(),
+  createdAt: integer('created_at').default(sql`(unixepoch())`),
+}, (t) => ({
+  userPromptIdx: index('idx_prompts_user').on(t.userId),
 }));

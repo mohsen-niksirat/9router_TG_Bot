@@ -20,6 +20,13 @@ import {
   addMediaGroupItem,
   getMediaGroupItems,
   consumeMediaGroupItems,
+  startChatSession,
+  endChatSession,
+  addSavedPrompt,
+  getSavedPrompts,
+  getSavedPromptById,
+  deleteSavedPrompt,
+  resolveSavedPrompts,
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
@@ -37,6 +44,8 @@ import {
   providerDetailKeyboard,
   chatActionsKeyboard,
   backKeyboard,
+  promptsKeyboard,
+  promptDetailKeyboard,
 } from 'lib/keyboards';
 import { ROUTING_POLICIES } from 'lib/providers';
 
@@ -77,6 +86,10 @@ export default async function (message) {
     '🔑 مدیریت کلیدها',
     '🔀 کمبوهای من',
     '💬 چت با هوش مصنوعی',
+    '💬 شروع چت جدید',
+    '🛑 پایان مکالمه',
+    '🔄 چت جدید',
+    '📋 پرامپت‌های من',
     '📊 آمار توکن‌ها',
     '❓ راهنما',
     '❌ لغو',
@@ -235,6 +248,41 @@ export default async function (message) {
       });
       return;
     }
+
+    // ── Add Saved Prompt: step 1 — title ──
+    if (wState === 'prompt:title') {
+      if (!text) { await api.sendMessage({ chat_id: chat.id, text: '⚠️ عنوان نمی‌تواند خالی باشد.' }); return; }
+      await setWizard(from.id, 'prompt:text', { title: text.trim() });
+      await api.sendMessage({
+        chat_id: chat.id,
+        text:
+          `✏️ عنوان پرامپت: <b>${escHtml(text.trim())}</b>\n\n` +
+          `حالا <b>متن کامل و جامع پرامپت</b> خود را ارسال کنید (بدون محدودیت در طول متن):\n\n` +
+          `<i>این متن دفعه بعد با فراخوانی عبارت «پرامپت ${escHtml(text.trim())}» جایگزین خواهد شد.</i>`,
+        parse_mode: 'HTML',
+        reply_markup: backKeyboard('a:prompts'),
+      });
+      return;
+    }
+
+    // ── Add Saved Prompt: step 2 — prompt text ──
+    if (wState === 'prompt:text') {
+      if (!text) { await api.sendMessage({ chat_id: chat.id, text: '⚠️ متن پرامپت نمی‌تواند خالی باشد.' }); return; }
+      const title = ctx.title || 'پرامپت سفارشی';
+      await addSavedPrompt(user.id, { title, prompt: text.trim() });
+      await clearWizard(from.id);
+      const prompts = await getSavedPrompts(user.id);
+      await api.sendMessage({
+        chat_id: chat.id,
+        text:
+          `✅ <b>پرامپت «${escHtml(title)}» با موفقیت ذخیره شد!</b>\n\n` +
+          `💡 <b>نحوه استفاده آسان:</b>\n` +
+          `کافیست در هنگام چت یا ارسال عکس، عبارت <code>پرامپت ${escHtml(title)}</code> یا <code>#${escHtml(title)}</code> را بفرستید تا متن پرامپت به صورت خودکار اعمال گردد.`,
+        parse_mode: 'HTML',
+        reply_markup: promptsKeyboard(prompts),
+      });
+      return;
+    }
   }
 
   // ─── /cancel ──────────────────────────────────────────────────────────────
@@ -261,13 +309,13 @@ export default async function (message) {
       `این ربات مثل ۹روتر، کلیدهای هوش مصنوعی تو رو مدیریت می‌کنه:\n\n` +
       `🔑 <b>مرحله ۱:</b> از منوی «کلیدها» کلیدهای API خودت رو اضافه کن\n` +
       `🔀 <b>مرحله ۲:</b> از «کمبوها» یه ترکیب از ارائه‌دهنده‌ها بساز\n` +
-      `💬 <b>مرحله ۳:</b> شروع به چت کن!\n\n` +
+      `💬 <b>مرحله ۳:</b> روی «شروع چت جدید» بزن و گفتگوی پیوسته رو آغاز کن!\n\n` +
       `🔐 <i>کلیدهای تو رمزگذاری‌شده ذخیره می‌شن و فقط خودت بهشون دسترسی داری.</i>`;
 
     const welcomeReturning =
       `👋 <b>خوش برگشتی ${escHtml(from.first_name)}!</b>\n\n` +
       (combo
-        ? `🔀 کمبوی فعال: <b>${escHtml(combo.name)}</b>\n💡 هر پیامی که بفرستی، با هوش مصنوعی چت می‌کنه!`
+        ? `🔀 کمبوی فعال: <b>${escHtml(combo.name)}</b>\n💡 برای ارسال پیام یا تصویر به هوش مصنوعی، روی <b>«💬 شروع چت جدید»</b> بزنید.`
         : `⚠️ هنوز کمبویی انتخاب نکردی. از منوی «کمبوهای من» یه ترکیب بساز.`);
 
     await api.sendMessage({
@@ -279,25 +327,83 @@ export default async function (message) {
     await api.sendMessage({
       chat_id: chat.id,
       text: '👇 نوار دسترسی سریع:',
-      reply_markup: mainReplyKeyboard(from.id),
+      reply_markup: mainReplyKeyboard(from.id, !!user.chatSessionActive),
     });
     return;
   }
 
-  // ─── /new — Clear history ─────────────────────────────────────────────────
-  if (text === '/new' || text === '💬 چت با هوش مصنوعی') {
+  // ─── /new or /chat — Start continuous chat session ────────────────────────
+  if (
+    text === '/new' ||
+    text === '/chat' ||
+    text === '💬 شروع چت جدید' ||
+    text === '🔄 چت جدید' ||
+    text === '💬 چت با هوش مصنوعی'
+  ) {
+    await clearWizard(from.id);
     await clearHistory(user.id);
+    await startChatSession(user.id);
     const comboRaw = await getActiveCombo(user);
     const combo = parseCombo(comboRaw);
     const comboInfo = combo
-      ? `🔀 کمبو فعال: <b>${escHtml(combo.name)}</b> (${ROUTING_POLICIES[combo.routingPolicy]?.name || combo.routingPolicy})`
+      ? `🔀 کمبوی فعال: <b>${escHtml(combo.name)}</b> (${ROUTING_POLICIES[combo.routingPolicy]?.name || combo.routingPolicy})`
       : '⚠️ <b>هنوز کمبویی انتخاب نشده.</b> از «کمبوهای من» یک کمبو فعال کن.';
 
     await api.sendMessage({
       chat_id: chat.id,
-      text: `💬 <b>چت جدید شروع شد!</b> تاریخچه پاک شد.\n\n${comboInfo}\n\n<i>حالا پیامت رو بنویس...</i>`,
+      text:
+        `💬 <b>گفتگوی جدید آغاز شد!</b>\n\n` +
+        `${comboInfo}\n\n` +
+        `<i>💡 پیام یا عکس‌های خود را ارسال فرمایید. تمامی تبادلات پیام تا زمان زدن «🛑 پایان مکالمه» در همین تسک به صورت پیوسته انجام خواهد شد.</i>\n\n` +
+        `<i>📋 برای استفاده از پرامپت‌های ذخیره‌شده، از عبارت <code>پرامپت [عنوان]</code> یا <code>#[عنوان]</code> در کپشن یا پیام استفاده کنید.</i>`,
       parse_mode: 'HTML',
-      reply_markup: chatActionsKeyboard(),
+      reply_markup: chatActionsKeyboard(true),
+    });
+    await api.sendMessage({
+      chat_id: chat.id,
+      text: '👇 نوار وضعیت گفتگو (چت فعال):',
+      reply_markup: mainReplyKeyboard(from.id, true),
+    }).catch(() => {});
+    return;
+  }
+
+  // ─── /end or /stop — End chat session ─────────────────────────────────────
+  if (text === '/end' || text === '/stop' || text === '🛑 پایان مکالمه') {
+    await clearWizard(from.id);
+    await endChatSession(user.id);
+    const comboRaw = await getActiveCombo(user);
+    const combo = parseCombo(comboRaw);
+
+    await api.sendMessage({
+      chat_id: chat.id,
+      text:
+        `🛑 <b>گفتگو به پایان رسید.</b>\n\n` +
+        `تسک این مکالمه بسته شد و پیام‌های عادی دیگر به مدل هوش مصنوعی ارسال نمی‌شوند.\n` +
+        `برای شروع یک گفتگوی جدید، روی «💬 شروع چت جدید» یا دکمه زیر بزنید.`,
+      parse_mode: 'HTML',
+      reply_markup: mainMenuKeyboard(user, combo),
+    });
+    await api.sendMessage({
+      chat_id: chat.id,
+      text: '👇 نوار منوی اصلی:',
+      reply_markup: mainReplyKeyboard(from.id, false),
+    }).catch(() => {});
+    return;
+  }
+
+  // ─── /prompts — Saved prompts library ─────────────────────────────────────
+  if (text === '/prompts' || text === '/prompt' || text === '📋 پرامپت‌های من') {
+    const prompts = await getSavedPrompts(user.id);
+    await api.sendMessage({
+      chat_id: chat.id,
+      text:
+        `📋 <b>پرامپت‌های ذخیره‌شده شما</b>\n\n` +
+        (prompts.length
+          ? `تعداد پرامپت‌ها: <b>${prompts.length}</b>\n\n` +
+            `💡 برای استفاده در چت، کافیست در متن یا کپشن عکس عبارت <code>پرامپت [نام]</code> یا <code>#[نام]</code> را بنویسید.`
+          : `هنوز پرامپتی ذخیره نکرده‌اید! با دکمه زیر می‌توانید پرامپت دلخواه با متن طولانی ثبت کنید تا بدون نیاز به تایپ طولانی همراه عکس‌ها ارسال شود.`),
+      parse_mode: 'HTML',
+      reply_markup: promptsKeyboard(prompts),
     });
     return;
   }
@@ -379,12 +485,18 @@ export default async function (message) {
         `❓ <b>راهنمای ربات 9Router Chat</b>\n\n` +
         `<b>دستورات:</b>\n` +
         `/start — شروع / منوی اصلی\n` +
-        `/new — شروع چت جدید + پاک کردن تاریخچه\n` +
+        `/new یا /chat — شروع گفتگوی پیوسته جدید\n` +
+        `/end یا /stop — پایان مکالمه جاری\n` +
+        `/prompts — کتابخانه پرامپت‌های ذخیره‌شده\n` +
         `/keys — مدیریت کلیدهای API\n` +
         `/combos — مدیریت کمبوها\n` +
         `/providers — مدیریت ارائه‌دهنده‌ها\n` +
         `/stats — آمار مصرف توکن‌ها\n` +
         `/cancel — لغو عملیات جاری\n\n` +
+        `<b>مکالمه پیوسته (Session Continuity):</b>\n` +
+        `🔒 در حالت عادی ربات پیام‌های متفرقه را به هوش مصنوعی ارسال نمی‌کند. با زدن «شروع چت جدید» یک گفتگوی پیوسته آغاز می‌شود و تمامی عکس‌ها و پیام‌ها تا زمان «پایان مکالمه» داخل همان تسک دنبال می‌شوند تا صفحه گفتگوهای مانوس یا سایر ارائه‌دهنده‌ها شلوغ نشود.\n\n` +
+        `<b>کتابخانه پرامپت دلخواه:</b>\n` +
+        `📋 به دلیل محدودیت کپشن تلگرام، می‌توانید پرامپت‌های طولانی را ذخیره کنید و هنگام ارسال عکس فقط بنویسید <code>پرامپت [عنوان]</code> یا <code>#[عنوان]</code> تا کل پرامپت خودکار اعمال و ارسال شود.\n\n` +
         `<b>سیاست‌های مسیریابی:</b>\n` +
         `🛡️ <b>فالبک:</b> اولویت‌بندی کلیدها — سوئیچ خودکار هنگام خطا\n` +
         `🔄 <b>راند رابین:</b> توزیع چرخشی بین کلیدها\n` +
@@ -416,6 +528,30 @@ export default async function (message) {
     return;
   }
 
+  // ─── Session Gate ─────────────────────────────────────────────────────────
+  // In normal mode, do not process stray messages into AI unless an active session is open.
+  if (!user.chatSessionActive) {
+    const comboRaw = await getActiveCombo(user);
+    const combo = parseCombo(comboRaw);
+    await api.sendMessage({
+      chat_id: chat.id,
+      text:
+        `🔒 <b>هیچ گفتگوی فعالی باز نیست.</b>\n\n` +
+        `برای اینکه مکالمات و تصاویر ارسالی شما به صورت منظم و پیوسته در قالب یک تسک مشخص تبادل شوند و گفتگوهای مانوس شلوغ نشوند، لطفاً ابتدا یک گفتگوی جدید آغاز کنید:\n\n` +
+        (combo ? `🔀 کمبوی آماده: <b>${escHtml(combo.name)}</b>\n\n` : '') +
+        `<i>👇 با زدن دکمه زیر چت فعال می‌شود و تمامی پیام‌های بعدی تا زمان «🛑 پایان مکالمه» در همین گفتگو پیگیری خواهند شد.</i>`,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
+          [{ text: '🔀 انتخاب کمبو', callback_data: 'a:combos' }],
+          [{ text: '📋 پرامپت‌های من', callback_data: 'a:prompts' }],
+        ],
+      },
+    });
+    return;
+  }
+
   const comboRaw = await getActiveCombo(user);
   const combo = parseCombo(comboRaw);
 
@@ -440,6 +576,14 @@ export default async function (message) {
   const mgId = message.media_group_id;
 
   let promptWithImages = text;
+  let appliedPromptTitle = null;
+
+  // Resolve saved prompts against incoming text/caption
+  if (text) {
+    const pRes = await resolveSavedPrompts(user.id, text);
+    promptWithImages = pRes.resolvedText;
+    appliedPromptTitle = pRes.matchedTitle;
+  }
 
   if (photos || isImageDoc) {
     const fileId = photos ? photos[photos.length - 1].file_id : message.document.file_id;
@@ -502,6 +646,12 @@ export default async function (message) {
         return;
       }
 
+      if (albumCaption) {
+        const pRes = await resolveSavedPrompts(user.id, albumCaption);
+        albumCaption = pRes.resolvedText;
+        if (pRes.matchedTitle) appliedPromptTitle = pRes.matchedTitle;
+      }
+
       promptWithImages = (albumCaption ? `${albumCaption}\n\n` : '') + imgParts.join('\n');
     } else {
       // Single photo
@@ -517,7 +667,7 @@ export default async function (message) {
         }
         if (bytes) {
           const imgPart = `[Image: data:image/jpeg;base64,${uint8ToBase64(bytes)}]`;
-          promptWithImages = text ? `${text}\n\n${imgPart}` : imgPart;
+          promptWithImages = promptWithImages ? `${promptWithImages}\n\n${imgPart}` : imgPart;
         }
       } catch (e) {
         console.warn('[9Router] Failed to fetch single photo:', e);
@@ -528,9 +678,13 @@ export default async function (message) {
   if (!promptWithImages) return;
 
   // Show typing... then call AI
+  const thinkPromptNotice = appliedPromptTitle
+    ? `\n<i>(پرامپت «${escHtml(appliedPromptTitle)}» اعمال شد)</i>`
+    : '';
+
   const thinkMsg = await api.sendMessage({
     chat_id: chat.id,
-    text: '⏳ <b>در حال پردازش...</b>',
+    text: `⏳ <b>در حال پردازش...</b>${thinkPromptNotice}`,
     parse_mode: 'HTML',
   });
 
@@ -548,7 +702,7 @@ export default async function (message) {
       await api.editMessageText({
         chat_id: chat.id,
         message_id: thinkMsg.message_id,
-        text: `⏳ <b>در حال پردازش...</b>\n⏱ <code>${seconds} ثانیه</code>`,
+        text: `⏳ <b>در حال پردازش...</b>${thinkPromptNotice}\n⏱ <code>${seconds} ثانیه</code>`,
         parse_mode: 'HTML',
       }).catch(() => {});
     }
@@ -586,7 +740,7 @@ export default async function (message) {
             photo: firstImg,
             caption: formattedDesc ? `${formattedDesc}${footer}` : footer.trim(),
             parse_mode: 'HTML',
-            reply_markup: chatActionsKeyboard(),
+            reply_markup: chatActionsKeyboard(true),
           });
           await api.deleteMessage({ chat_id: chat.id, message_id: thinkMsg.message_id }).catch(() => {});
 
@@ -623,7 +777,7 @@ export default async function (message) {
           message_id: thinkMsg.message_id,
           text: (formattedDesc.slice(0, 3950) + footer).slice(0, 4096),
           parse_mode: 'HTML',
-          reply_markup: chatActionsKeyboard(),
+          reply_markup: chatActionsKeyboard(true),
         });
         return;
       } catch (photoErr) {
@@ -637,10 +791,11 @@ export default async function (message) {
       ? {
           inline_keyboard: [
             [{ text: '🔄 دریافت تصویر و نتیجه نهایی', callback_data: `manus:check:${deferredTaskId}` }],
+            [{ text: '🛑 پایان مکالمه', callback_data: 'a:end_chat' }],
             [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
           ],
         }
-      : chatActionsKeyboard();
+      : chatActionsKeyboard(true);
 
     await api.editMessageText({
       chat_id: chat.id,
@@ -661,7 +816,7 @@ export default async function (message) {
         : `❌ <b>خطا در پردازش پیام:</b>\n<code>${escHtml(err.message)}</code>\n\n` +
           `💡 مطمئن شو کلید API فعال در کمبو داری.`,
       parse_mode: 'HTML',
-      reply_markup: chatActionsKeyboard(),
+      reply_markup: chatActionsKeyboard(true),
     }).catch(() => {});
   } finally {
     finished = true;

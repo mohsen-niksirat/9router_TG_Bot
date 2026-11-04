@@ -1,6 +1,6 @@
 import { db } from 'sdk';
 import { eq, and, desc, asc, sql } from 'sdk/db';
-import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer } from 'schema';
+import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer, savedPrompts } from 'schema';
 import { encryptKey, decryptKey } from 'lib/crypto';
 import { BUILTIN_PROVIDERS } from 'lib/providers';
 
@@ -489,4 +489,100 @@ export async function consumeMediaGroupItems(mediaGroupId, ids) {
       ))
       .run();
   }
+}
+
+// ─── Chat Session Management ──────────────────────────────────────────────────
+export async function startChatSession(userId) {
+  await clearHistory(userId);
+  await db.update(users).set({
+    chatSessionActive: 1,
+    currentTaskId: null,
+  }).where(eq(users.id, userId)).run();
+}
+
+export async function endChatSession(userId) {
+  await db.update(users).set({
+    chatSessionActive: 0,
+    currentTaskId: null,
+  }).where(eq(users.id, userId)).run();
+}
+
+export async function setSessionTaskId(userId, taskId) {
+  await db.update(users).set({
+    currentTaskId: taskId,
+  }).where(eq(users.id, userId)).run();
+}
+
+// ─── Saved Prompts Library ────────────────────────────────────────────────────
+export async function addSavedPrompt(userId, { title, prompt }) {
+  const [created] = await db.insert(savedPrompts).values({
+    userId,
+    title: title.trim(),
+    prompt: prompt.trim(),
+  }).returning().run();
+  return created;
+}
+
+export async function getSavedPrompts(userId) {
+  return await db.select().from(savedPrompts)
+    .where(eq(savedPrompts.userId, userId))
+    .orderBy(desc(savedPrompts.id))
+    .all();
+}
+
+export async function getSavedPromptById(id, userId) {
+  return await db.select().from(savedPrompts)
+    .where(and(eq(savedPrompts.id, id), eq(savedPrompts.userId, userId)))
+    .get() || null;
+}
+
+export async function deleteSavedPrompt(id, userId) {
+  await db.delete(savedPrompts)
+    .where(and(eq(savedPrompts.id, id), eq(savedPrompts.userId, userId)))
+    .run();
+}
+
+/**
+ * Searches for any saved prompt references in text and expands them.
+ * Supports:
+ * - "پرامپت <نام>" or "پرامپت: <نام>"
+ * - "#<نام>"
+ * - Exact match of prompt title
+ *
+ * @returns {{ resolvedText: string, matchedTitle: string|null }}
+ */
+export async function resolveSavedPrompts(userId, text) {
+  if (!text || typeof text !== 'string') return { resolvedText: text, matchedTitle: null };
+  const prompts = await getSavedPrompts(userId);
+  if (!prompts.length) return { resolvedText: text, matchedTitle: null };
+
+  let resolved = text;
+  let matchedTitle = null;
+
+  for (const p of prompts) {
+    const t = p.title.trim();
+    if (!t) continue;
+    const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. Exact match
+    if (text.trim().toLowerCase() === t.toLowerCase()) {
+      return { resolvedText: p.prompt, matchedTitle: t };
+    }
+
+    // 2. "پرامپت: <title>" or "پرامپت <title>"
+    const promptRegex = new RegExp(`پرامپت\\s*:?\\s*${escaped}`, 'gi');
+    if (promptRegex.test(resolved)) {
+      resolved = resolved.replace(promptRegex, p.prompt);
+      matchedTitle = t;
+    }
+
+    // 3. "#<title>"
+    const tagRegex = new RegExp(`#${escaped}`, 'gi');
+    if (tagRegex.test(resolved)) {
+      resolved = resolved.replace(tagRegex, p.prompt);
+      matchedTitle = t;
+    }
+  }
+
+  return { resolvedText: resolved, matchedTitle };
 }

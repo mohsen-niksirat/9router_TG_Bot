@@ -2,7 +2,7 @@
  * Chat orchestrator: builds messages array from history and calls the router.
  */
 
-import { getHistory, appendHistory, clearHistory, getActiveCombo, parseCombo, getUserProviders } from 'lib/db';
+import { getHistory, appendHistory, clearHistory, getActiveCombo, parseCombo, getUserProviders, setSessionTaskId } from 'lib/db';
 import { routeChat } from 'lib/ai_router';
 
 const SYSTEM_PROMPT =
@@ -76,14 +76,15 @@ export async function sendChat(dbUser, tgId, userText) {
 
   // 6. Route
   const result = await routeChat({
-    userId:       dbUser.id,
+    userId:         dbUser.id,
     tgId,
     messages,
     providerSlugs,
     routingPolicy,
     modelOverrides,
     providerRows,
-    maxTokens:    1500,
+    maxTokens:      1500,
+    existingTaskId: dbUser.currentTaskId || null,
   });
 
   // 7. Save to history (lightweight representation for images to avoid bloating DB)
@@ -99,6 +100,11 @@ export async function sendChat(dbUser, tgId, userText) {
     result.model,
     result.usage?.totalTokens || 0
   );
+
+  // 8. Track active Manus task in session if newly created or continued
+  if (result.taskId && result.provider === 'manus') {
+    await setSessionTaskId(dbUser.id, result.taskId).catch(() => {});
+  }
 
   return result;
 }
