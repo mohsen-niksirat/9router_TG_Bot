@@ -28,6 +28,7 @@ import {
   getSavedPromptById,
   deleteSavedPrompt,
   resolveSavedPrompts,
+  isChatRequestCancelled,
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
@@ -55,6 +56,16 @@ import { ROUTING_POLICIES } from 'lib/providers';
 // 6MB keeps BOTH sides healthy: provider payload limits (OpenAI/Gemini ~20MB
 // raw) and the isolate's ~3.0s CPU budget (the encode loop is pure JS).
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+const MAX_TEXT_FILE_BYTES = 512 * 1024;
+
+const TEXT_CODE_EXTS = [
+  '.txt', '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs',
+  '.py', '.json', '.html', '.htm', '.css', '.scss', '.sass',
+  '.cpp', '.c', '.h', '.hpp', '.cs', '.java', '.rs', '.go',
+  '.php', '.sh', '.bash', '.zsh', '.ps1', '.bat', '.cmd',
+  '.sql', '.md', '.markdown', '.yaml', '.yml', '.toml', '.xml',
+  '.env', '.log', '.csv', '.tsv', '.ini', '.conf', '.properties'
+];
 
 export default async function (message) {
   if (!message || !message.chat) return;
@@ -582,9 +593,68 @@ export default async function (message) {
     return;
   }
 
+  // ─── Documents: Code & Text Files ─────────────────────────────────────────
+  const doc = message.document;
+  const isImageDoc = doc && (doc.mime_type || '').startsWith('image/');
+  let attachedFileName = null;
+
+  if (doc && !isImageDoc) {
+    const rawFileName = doc.file_name || 'file.txt';
+    const extMatch = rawFileName.match(/\.[^.]+$/);
+    const ext = (extMatch ? extMatch[0] : '').toLowerCase();
+    const mime = (doc.mime_type || '').toLowerCase();
+    const isTextMime = mime.startsWith('text/') || mime === 'application/json' ||
+      mime === 'application/javascript' || mime === 'application/xml' ||
+      mime === 'application/x-sh' || mime.includes('yaml') || mime.includes('toml');
+
+    const isCodeOrText = TEXT_CODE_EXTS.includes(ext) || isTextMime;
+
+    if (!isCodeOrText) {
+      await api.sendMessage({
+        chat_id: chat.id,
+        text: `⚠️ فرمت فایل «${escHtml(rawFileName)}» پشتیبانی نمی‌شود.\n\nلطفاً فایل‌های سورس‌کد و متنی (مانند py, js, json, txt, html, css, cpp, java, sql, md, csv) یا عکس ارسال فرمایید.`,
+        parse_mode: 'HTML',
+      });
+      return;
+    }
+
+    if ((doc.file_size || 0) > MAX_TEXT_FILE_BYTES) {
+      await api.sendMessage({
+        chat_id: chat.id,
+        text: `⚠️ فایل «${escHtml(rawFileName)}» بزرگتر از سقف مجاز ۵۰۰ کیلوبایت است؛ لطفاً فایل کوچکتری بفرستید.`,
+        parse_mode: 'HTML',
+      });
+      return;
+    }
+
+    try {
+      const bytes = await withTimeout(api.getFileContent(doc.file_id), 8000);
+      if (!bytes || !bytes.length) {
+        throw new Error('فایل دریافت نشد');
+      }
+      let decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      const isTruncated = decoded.length > 50000;
+      if (isTruncated) {
+        decoded = decoded.slice(0, 50000) + '\n\n... (ادامه فایل به دلیل طولانی بودن کوتاه شد)';
+      }
+      attachedFileName = rawFileName;
+      const langTag = ext.replace('.', '') || 'text';
+      const fileBlock = `📄 محتوای فایل ضمیمه‌شده (${rawFileName}):\n\`\`\`${langTag}\n${decoded}\n\`\`\``;
+      const basePrompt = promptWithImages || 'لطفاً این فایل را بررسی کن، کدها یا محتوای آن را تحلیل و در صورت وجود اشکال یا امکان بهینه‌سازی، توضیح کامل بده.';
+      promptWithImages = `${basePrompt}\n\n${fileBlock}`;
+    } catch (err) {
+      console.warn('[9Router] Failed to fetch document file:', err);
+      await api.sendMessage({
+        chat_id: chat.id,
+        text: `❌ خطا در دانلود یا خواندن محتوای فایل «${escHtml(rawFileName)}».`,
+        parse_mode: 'HTML',
+      });
+      return;
+    }
+  }
+
   // ─── Multimodal Photos & Media Group (Albums) ─────────────────────────────
   const photos = message.photo;
-  const isImageDoc = message.document && (message.document.mime_type || '').startsWith('image/');
   const mgId = message.media_group_id;
 
   let promptWithImages = text;
@@ -690,14 +760,25 @@ export default async function (message) {
   if (!promptWithImages) return;
 
   // Show typing... then call AI
-  const thinkPromptNotice = appliedPromptTitle
+  let thinkPromptNotice = appliedPromptTitle
     ? `\n<i>(پرامپت «${escHtml(appliedPromptTitle)}» اعمال شد)</i>`
     : '';
+  if (attachedFileName) {
+    thinkPromptNotice += `\n<i>(فایل «${escHtml(attachedFileName)}» ضمیمه شد)</i>`;
+  }
+
+  const reqId = `${user.id}_${Date.now()}`;
+  const cancelKeyboard = {
+    inline_keyboard: [
+      [{ text: '❌ لغو درخواست', callback_data: `chat:cancel:${reqId}` }],
+    ],
+  };
 
   const thinkMsg = await api.sendMessage({
     chat_id: chat.id,
     text: `⏳ <b>در حال پردازش...</b>${thinkPromptNotice}`,
     parse_mode: 'HTML',
+    reply_markup: cancelKeyboard,
   });
 
   // Watchdog: tick the placeholder while a slow reply is pending so it can
@@ -708,14 +789,20 @@ export default async function (message) {
   const watchdog = (async () => {
     const t0 = Date.now();
     while (!finished && Date.now() - t0 < 23000) {
-      await sleep(7000);
+      await sleep(6000);
       if (finished) return;
+      const isCancelled = await isChatRequestCancelled(user.id, reqId);
+      if (isCancelled) {
+        finished = true;
+        return;
+      }
       const seconds = Math.floor((Date.now() - t0) / 1000);
       await api.editMessageText({
         chat_id: chat.id,
         message_id: thinkMsg.message_id,
         text: `⏳ <b>در حال پردازش...</b>${thinkPromptNotice}\n⏱ <code>${seconds} ثانیه</code>`,
         parse_mode: 'HTML',
+        reply_markup: cancelKeyboard,
       }).catch(() => {});
     }
   })();
@@ -724,6 +811,10 @@ export default async function (message) {
     // Wall-cap of the platform is ∈ (25s, 30s] — 17s for the whole chat call
     // leaves room for the photo download above and the cleanup below.
     const result = await withTimeout(sendChat(user, from.id, promptWithImages), 24000);
+
+    if (await isChatRequestCancelled(user.id, reqId)) {
+      return;
+    }
 
     const deferredTaskId = result?.deferredTaskId || result?.usage?.deferredTaskId;
     if (deferredTaskId) {
@@ -817,6 +908,9 @@ export default async function (message) {
       reply_markup: finalKeyboard,
     });
   } catch (err) {
+    if (await isChatRequestCancelled(user.id, reqId)) {
+      return;
+    }
     const timedOut = !!(err && err.isTimeout);
     await api.editMessageText({
       chat_id: chat.id,

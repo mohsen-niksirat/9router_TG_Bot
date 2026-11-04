@@ -35,6 +35,7 @@ import {
   getSavedPrompts,
   getSavedPromptById,
   deleteSavedPrompt,
+  cancelChatRequest,
 } from 'lib/db';
 import { sendChat } from 'lib/chat';
 import { decryptKey, maskKey } from 'lib/crypto';
@@ -98,6 +99,27 @@ async function handleCallback(query) {
         text: text.slice(0, 4096), parse_mode: parseMode, reply_markup: keyboard,
       });
     } catch {}
+  }
+
+  // ─── Live Request Cancellation ─────────────────────────────────────────────
+  if (data.startsWith('chat:cancel:')) {
+    const reqId = data.replace('chat:cancel:', '');
+    const ownerUserId = parseInt(reqId.split('_')[0], 10);
+    if (user.id !== ownerUserId) {
+      await api.answerCallbackQuery({
+        callback_query_id: query.id,
+        text: '⛔ این درخواست متعلق به شما نیست!',
+        show_alert: true,
+      }).catch(() => {});
+      return;
+    }
+    await cancelChatRequest(user.id, reqId);
+    await api.answerCallbackQuery({
+      callback_query_id: query.id,
+      text: '✅ درخواست متوقف شد.',
+    }).catch(() => {});
+    await edit('❌ <b>درخواست لغو شد.</b>\n\nبرای ادامه، پیام جدید بفرستید یا مکالمه را به پایان برسانید.', chatActionsKeyboard(true));
+    return;
   }
 
   // ─── Manus Task Check ──────────────────────────────────────────────────────

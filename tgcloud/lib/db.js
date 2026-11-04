@@ -1,6 +1,6 @@
 import { db } from 'sdk';
 import { eq, and, desc, asc, sql } from 'sdk/db';
-import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer, savedPrompts } from 'schema';
+import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer, savedPrompts, chatClaims } from 'schema';
 import { encryptKey, decryptKey } from 'lib/crypto';
 import { BUILTIN_PROVIDERS } from 'lib/providers';
 
@@ -593,4 +593,25 @@ export async function resolveSavedPrompts(userId, text) {
   }
 
   return { resolvedText: resolved, matchedTitle };
+}
+
+// ─── Live Request Cancellation ────────────────────────────────────────────────
+export async function cancelChatRequest(userId, reqId) {
+  try {
+    await db.insert(chatClaims).values({
+      userId,
+      fingerprint: `cancel_${reqId}`,
+    }).run();
+  } catch {}
+}
+
+export async function isChatRequestCancelled(userId, reqId) {
+  try {
+    const row = await db.select().from(chatClaims)
+      .where(and(eq(chatClaims.userId, userId), eq(chatClaims.fingerprint, `cancel_${reqId}`)))
+      .get();
+    return !!row;
+  } catch {
+    return false;
+  }
 }
