@@ -12,6 +12,7 @@ export const users = table('users', {
   wizardData:        text('wizard_data'),           // JSON context for multi-step wizards
   chatSessionActive: integer('chat_session_active').default(0), // 1 = active continuous conversation session
   currentTaskId:     text('current_task_id'),       // active Manus task ID for multi-turn task.sendMessage
+  streamMode:        integer('stream_mode').default(1), // 1 = live streaming & live thoughts, 0 = disabled (ticking only)
   createdAt:         integer('created_at').default(sql`(unixepoch())`),
 }, (t) => ({
   tgIdx: index('idx_users_tg').on(t.tgId),

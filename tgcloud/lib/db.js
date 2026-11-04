@@ -15,6 +15,7 @@ function parseJson(v, fallback = null) {
 
 export async function getOrCreateUser(tgUser) {
   const tgId = Number(tgUser.id);
+  await db.run(sql`ALTER TABLE users ADD COLUMN stream_mode INTEGER DEFAULT 1`).catch(() => {});
   let user = await db.select().from(users).where(eq(users.tgId, tgId)).get();
   if (user) {
     // Auto-seed any newly added built-in providers in ONE pass: fetch the
@@ -113,6 +114,14 @@ export async function clearWizard(tgId) {
 
 export function parseWizardData(user) {
   return parseJson(user.wizardData, {});
+}
+
+export async function toggleUserStreamMode(userId) {
+  const u = await db.select().from(users).where(eq(users.id, userId)).get();
+  const current = (u && typeof u.streamMode === 'number') ? u.streamMode : 1;
+  const next = current === 1 ? 0 : 1;
+  await db.update(users).set({ streamMode: next }).where(eq(users.id, userId)).run();
+  return next;
 }
 
 // ─── User Providers ───────────────────────────────────────────────────────────

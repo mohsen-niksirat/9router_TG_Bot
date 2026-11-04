@@ -17,7 +17,7 @@ const SYSTEM_PROMPT =
  * @param {string} userText The user's message
  * @returns {Promise<{text, provider, model}>}
  */
-export async function sendChat(dbUser, tgId, userText) {
+export async function sendChat(dbUser, tgId, userText, onStream = null) {
   // 1. Load history
   const history = await getHistory(dbUser.id);
 
@@ -95,6 +95,7 @@ export async function sendChat(dbUser, tgId, userText) {
     maxTokens:      1500,
     existingTaskId: dbUser.currentTaskId || null,
     pinnedKeyId,
+    onStream,
   });
 
   // 7. Save to history (lightweight representation for images to avoid bloating DB)

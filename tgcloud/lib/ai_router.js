@@ -84,18 +84,69 @@ export async function getNextKey(userId, providerSlug, policy = 'fallback', excl
 
 // ─── Provider Callers ─────────────────────────────────────────────────────────
 
+async function parseSSEStream(res, onStream) {
+  let accumulated = '';
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  const processLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith('data:')) return;
+    const jsonStr = trimmed.slice(5).trim();
+    if (jsonStr === '[DONE]') return;
+    try {
+      const parsed = JSON.parse(jsonStr);
+      const delta = parsed?.choices?.[0]?.delta?.content || '';
+      if (delta) {
+        accumulated += delta;
+        onStream(delta, accumulated);
+      }
+    } catch {}
+  };
+
+  if (res.body?.getReader) {
+    const reader = res.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const l of lines) processLine(l);
+    }
+    if (buffer) processLine(buffer);
+  } else if (res.body?.[Symbol.asyncIterator]) {
+    for await (const chunk of res.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const l of lines) processLine(l);
+    }
+    if (buffer) processLine(buffer);
+  }
+
+  const clean = accumulated.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+  return {
+    text: clean,
+    promptTokens: 100,
+    completionTokens: Math.ceil(clean.length / 4),
+    totalTokens: 100 + Math.ceil(clean.length / 4),
+  };
+}
+
 /**
  * Gemini via Google's OpenAI-compatible endpoint.
  */
-async function callGemini(apiKey, model, messages, maxTokens) {
+async function callGemini(apiKey, model, messages, maxTokens, onStream = null) {
   const url = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
+  const stream = typeof onStream === 'function';
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: maxTokens }),
+    body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: maxTokens, stream }),
   });
 
   if (!res.ok) {
@@ -103,6 +154,10 @@ async function callGemini(apiKey, model, messages, maxTokens) {
     const err = new Error(`Gemini ${res.status}: ${errText.slice(0, 200)}`);
     err.status = res.status;
     throw err;
+  }
+
+  if (stream && (res.body?.getReader || res.body?.[Symbol.asyncIterator])) {
+    return await parseSSEStream(res, onStream);
   }
 
   const data = await res.json();
@@ -122,15 +177,16 @@ async function callGemini(apiKey, model, messages, maxTokens) {
 /**
  * Any OpenAI-compatible endpoint (Groq, DeepSeek, OpenAI, OpenRouter, custom).
  */
-async function callOpenAICompat(baseUrl, apiKey, model, messages, maxTokens) {
+async function callOpenAICompat(baseUrl, apiKey, model, messages, maxTokens, onStream = null) {
   const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const stream = typeof onStream === 'function';
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: maxTokens }),
+    body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: maxTokens, stream }),
   });
 
   if (!res.ok) {
@@ -138,6 +194,10 @@ async function callOpenAICompat(baseUrl, apiKey, model, messages, maxTokens) {
     const err = new Error(`AI ${res.status}: ${errText.slice(0, 200)}`);
     err.status = res.status;
     throw err;
+  }
+
+  if (stream && (res.body?.getReader || res.body?.[Symbol.asyncIterator])) {
+    return await parseSSEStream(res, onStream);
   }
 
   const data = await res.json();
@@ -157,55 +217,66 @@ async function callOpenAICompat(baseUrl, apiKey, model, messages, maxTokens) {
 
 // ─── Manus AI (API v2 Tasks & Agents) ─────────────────────────────────────────
 
-const MANUS_IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
+const MANUS_IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff'];
+const MANUS_FILE_HOST_HINTS = [
+  'manuscdn.com',
+  'files.manus',
+  'manus.im',
+  'manus-assets',
+  'amazonaws.com',
+  's3.',
+  'blob.core.windows.net',
+  'googleusercontent.com',
+];
 const MANUS_INPUT_HINTS = [
   'user_input',
   'input_photo',
   'telegram_photo',
   'telegram_document',
   '/input/',
+  '/inputs/',
   'input_image',
   'source_image',
   'original_image',
-  'upload',
-  'attachment',
 ];
 
 function looksLikeManusMedia(url) {
   if (!url || typeof url !== 'string') return false;
   const u = url.toLowerCase();
-  return (
-    MANUS_IMAGE_EXTS.some((ext) => u.includes(ext)) ||
-    u.includes('manuscdn.com') ||
-    u.includes('files.manus') ||
-    u.includes('/asset') ||
-    u.includes('/image')
-  );
+  if (!u.startsWith('http')) return false;
+  if (MANUS_IMAGE_EXTS.some((ext) => u.includes(ext))) return true;
+  return MANUS_FILE_HOST_HINTS.some((h) => u.includes(h)) &&
+    ['/file', '/files', '/asset', '/image', '/media', '/upload', '/download', '/cdn', 'output', 'result', 'portrait'].some((k) => u.includes(k));
 }
 
 function isManusInputFile(url, name) {
-  const s = `${name || ''} ${url || ''}`.toLowerCase();
+  const pathOnly = (url || '').split('?')[0].toLowerCase();
+  const nameOnly = (name || '').toLowerCase();
+  const combined = `${nameOnly} ${pathOnly}`;
+
   if (
-    s.includes('output') ||
-    s.includes('result') ||
-    s.includes('edited') ||
-    s.includes('export') ||
-    s.includes('generated') ||
-    s.includes('final')
+    combined.includes('output') ||
+    combined.includes('result') ||
+    combined.includes('edited') ||
+    combined.includes('export') ||
+    combined.includes('generated') ||
+    combined.includes('final') ||
+    combined.includes('portrait')
   ) {
     return false;
   }
-  return MANUS_INPUT_HINTS.some((hint) => s.includes(hint));
+
+  return MANUS_INPUT_HINTS.some((hint) => combined.includes(hint));
 }
 
 function extractManusMediaUrls(obj, list, depth = 0) {
   if (!obj || depth > 8) return;
   if (typeof obj === 'string') {
-    const mdMatches = Array.from(obj.matchAll(/https?:\/\/[^\s\)\"']+/g));
+    const mdMatches = Array.from(obj.matchAll(/https?:\/\/[^\s\)\"\'<>]+/g));
     for (const m of mdMatches) {
       const u = m[0];
       if (looksLikeManusMedia(u) && !isManusInputFile(u, '')) {
-        list.push(u);
+        if (!list.includes(u)) list.push(u);
       }
     }
     return;
@@ -215,12 +286,12 @@ function extractManusMediaUrls(obj, list, depth = 0) {
     return;
   }
   if (typeof obj === 'object') {
-    for (const key of ['fileUrl', 'file_url', 'url', 'download_url', 'downloadUrl', 'src', 'image_url', 'imageUrl']) {
+    for (const key of ['fileUrl', 'file_url', 'url', 'download_url', 'downloadUrl', 'src', 'href', 'image_url', 'imageUrl', 'public_url', 'asset_url']) {
       const val = obj[key];
       const name = obj.fileName || obj.filename || obj.name || '';
       if (typeof val === 'string' && val.startsWith('http') && looksLikeManusMedia(val)) {
         if (!isManusInputFile(val, name)) {
-          list.push(val);
+          if (!list.includes(val)) list.push(val);
         }
       }
     }
@@ -318,7 +389,7 @@ export async function readManusTask(apiKey, taskId, prev) {
  * Manus AI via official API v2 async task system.
  * Docs: https://open.manus.ai/docs/v2/introduction
  */
-async function callManus(apiKey, model, messages, maxTokens, existingTaskId = null) {
+async function callManus(apiKey, model, messages, maxTokens, existingTaskId = null, onStream = null) {
   // 1. Resolve agent profile (standard | lite | max)
   let profile = 'standard';
   const m = (model || '').toLowerCase();
@@ -450,6 +521,17 @@ async function callManus(apiKey, model, messages, maxTokens, existingTaskId = nu
       mediaList = snap.mediaList;
       agentStatus = snap.agentStatus;
       statusDetail = snap.statusDetail;
+
+      if (typeof onStream === 'function') {
+        onStream(null, assistantText, {
+          agentStatus,
+          statusDetail,
+          mediaList,
+          taskId,
+          taskUrl,
+        });
+      }
+
       if (snap.done) {
         stillInFlight = false;
         break;
@@ -529,6 +611,7 @@ export async function routeChat({
   maxTokens = 1024,
   existingTaskId = null,
   pinnedKeyId = null,
+  onStream = null,
 }) {
   let lastError = null;
 
@@ -569,12 +652,12 @@ export async function routeChat({
         try {
           let result;
           if (slug === 'gemini') {
-            result = await withTimeout(callGemini(plainKey, model, messages, maxTokens), PROVIDER_HOP_MS);
+            result = await withTimeout(callGemini(plainKey, model, messages, maxTokens, onStream), PROVIDER_HOP_MS);
           } else if (slug === 'manus') {
-            result = await withTimeout(callManus(plainKey, model, messages, maxTokens, existingTaskId), PROVIDER_HOP_MS);
+            result = await withTimeout(callManus(plainKey, model, messages, maxTokens, existingTaskId, onStream), PROVIDER_HOP_MS);
           } else {
             const baseUrl = provRow?.baseUrl || 'https://api.openai.com/v1';
-            result = await withTimeout(callOpenAICompat(baseUrl, plainKey, model, messages, maxTokens), PROVIDER_HOP_MS);
+            result = await withTimeout(callOpenAICompat(baseUrl, plainKey, model, messages, maxTokens, onStream), PROVIDER_HOP_MS);
           }
 
           if (result && result.text) {

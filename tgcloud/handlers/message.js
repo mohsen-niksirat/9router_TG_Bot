@@ -36,11 +36,12 @@ import {
   addAdminTgId,
   getBotAdminStats,
   getUsersPage,
+  toggleUserStreamMode,
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
 import { sleep, withTimeout } from 'lib/sleep';
-import { enqueuePendingTask, deliverPendingTasks } from 'lib/manus_pending';
+import { enqueuePendingTask, deliverPendingTasks, manusApiKeyFor } from 'lib/manus_pending';
 import {
   escHtml,
   sanitizeTelegramHtml,
@@ -94,12 +95,22 @@ async function isGroupAdmin(chatId, userId) {
   }
 }
 
-async function fetchImageBytes(url) {
+async function fetchImageBytes(url, apiKey = '') {
   try {
-    const res = await withTimeout(fetch(url), 12000);
+    const headers = {};
+    if (apiKey) {
+      headers['x-manus-api-key'] = apiKey;
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    let res = await withTimeout(fetch(url, { headers }), 12000).catch(() => null);
+    if ((!res || !res.ok) && apiKey) {
+      res = await withTimeout(fetch(url), 12000).catch(() => null);
+    }
+
     if (res && res.ok) {
       const buf = await res.arrayBuffer();
-      if (buf && buf.byteLength > 0) {
+      if (buf && buf.byteLength > 100) {
         const ct = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
         const mime = ct.includes('webp') ? 'image/webp' : (ct.includes('jpeg') || ct.includes('jpg') ? 'image/jpeg' : 'image/png');
         return { bytes: new Uint8Array(buf), mime };
@@ -820,6 +831,23 @@ export default async function (message) {
     return;
   }
 
+  // ─── /stream — Toggle Live Stream Mode ────────────────────────────────────
+  if (text === '/stream') {
+    const next = await toggleUserStreamMode(user.id);
+    await api.sendMessage({
+      chat_id: chat.id,
+      text:
+        `⚡ <b>حالت استریم (Stream Mode): ${next === 1 ? '🟢 روشن شد' : '⚪ خاموش شد'}!</b>\n\n` +
+        (next === 1
+          ? `پاسخ‌های هوش مصنوعی به‌صورت <b>تایپ زنده و گزارش لحظه‌ای پیشرفت مانوس</b> نمایش داده می‌شوند.\n<i>برای خاموش کردن، مجدداً /stream را ارسال کنید.</i>`
+          : `پاسخ‌های هوش مصنوعی پس از اتمام کامل پردازش به‌صورت <b>یکجا</b> ارسال می‌شوند.\n<i>برای فعال‌سازی مجدد تایپ زنده، /stream را ارسال کنید.</i>`),
+      parse_mode: 'HTML',
+      reply_to_message_id: isGroup ? targetReplyToId : undefined,
+      allow_sending_without_reply: true,
+    });
+    return;
+  }
+
   // ─── AI Chat (any text or photo) ──────────────────────────────────────────
   if (message.voice || message.audio) {
     await api.sendMessage({
@@ -1113,31 +1141,96 @@ export default async function (message) {
   // isolate's ~3.0s CPU budget and get the invocation killed silently, which
   // is exactly how the placeholder used to get stuck on forever.
   let finished = false;
+  let lastEditTime = 0;
+  let latestStreamText = '';
+  let latestManusMeta = null;
+  const isStreamEnabled = user.streamMode !== 0;
+  const t0 = Date.now();
+
+  const flushLivePreview = async (force = false) => {
+    if (!isStreamEnabled || finished) return;
+    const now = Date.now();
+    if (!force && now - lastEditTime < 1300) return;
+    lastEditTime = now;
+
+    try {
+      if (latestManusMeta) {
+        const st = latestManusMeta.agentStatus || 'running';
+        const stFa = {
+          planning: 'نقشه‌ریزی و تحلیل دستور',
+          executing_command: 'اجرای کد و ابزار پردازش تصویر',
+          browsing: 'دریافت منابع و فایل‌ها',
+          generating_image: 'تولید و ارتقای تصویر باکیفیت',
+          running: 'پردازش هوشمند در محیط ابری',
+          completed: 'تکمیل شد',
+        }[st] || st;
+
+        const detail = latestManusMeta.statusDetail || {};
+        const stepDesc = detail.current_step_title || detail.description || '';
+        const prevText = (latestStreamText || '').slice(-200).trim();
+        const elapsed = Math.floor((Date.now() - t0) / 1000);
+
+        let liveBody = `⏳ <b>پردازش تصویر در مانوس در حال انجام است...</b>\n\n` +
+          `🎯 وضعیت: <b>${escHtml(stFa)}</b>\n`;
+        if (stepDesc) liveBody += `⚙️ <i>${escHtml(stepDesc)}</i>\n`;
+        if (prevText) liveBody += `\n💭 <i>«${escHtml(prevText)}»</i>\n`;
+        liveBody += `\n⏱ <code>${elapsed} ثانیه</code>`;
+
+        await api.editMessageText({
+          chat_id: chat.id,
+          message_id: thinkMsg.message_id,
+          text: liveBody,
+          parse_mode: 'HTML',
+          reply_markup: cancelKeyboard,
+        }).catch(() => {});
+      } else if (latestStreamText) {
+        const userMention = `<a href="tg://user?id=${from.id}">${escHtml(from.first_name || 'کاربر')}</a>`;
+        const groupHeader = isGroup ? `👤 ${userMention} <i>(در حال تایپ پاسخ...)</i>:\n\n` : '';
+        const displayChunk = (groupHeader + sanitizeTelegramHtml(latestStreamText.slice(0, 3900)) + ' ▌');
+        await api.editMessageText({
+          chat_id: chat.id,
+          message_id: thinkMsg.message_id,
+          text: displayChunk,
+          parse_mode: 'HTML',
+          reply_markup: cancelKeyboard,
+        }).catch(() => {});
+      }
+    } catch {}
+  };
+
+  const onStream = (chunk, fullTextSoFar, meta = null) => {
+    if (!isStreamEnabled) return;
+    if (fullTextSoFar) latestStreamText = fullTextSoFar;
+    if (meta) latestManusMeta = meta;
+    flushLivePreview(false);
+  };
+
   const watchdog = (async () => {
-    const t0 = Date.now();
     while (!finished && Date.now() - t0 < 23000) {
-      await sleep(6000);
+      await sleep(isStreamEnabled ? 1400 : 5000);
       if (finished) return;
       const isCancelled = await isChatRequestCancelled(user.id, reqId);
       if (isCancelled) {
         finished = true;
         return;
       }
-      const seconds = Math.floor((Date.now() - t0) / 1000);
-      await api.editMessageText({
-        chat_id: chat.id,
-        message_id: thinkMsg.message_id,
-        text: `⏳ <b>در حال پردازش...</b>${thinkPromptNotice}\n⏱ <code>${seconds} ثانیه</code>`,
-        parse_mode: 'HTML',
-        reply_markup: cancelKeyboard,
-      }).catch(() => {});
+      if (isStreamEnabled && (latestStreamText || latestManusMeta)) {
+        await flushLivePreview(true);
+      } else {
+        const seconds = Math.floor((Date.now() - t0) / 1000);
+        await api.editMessageText({
+          chat_id: chat.id,
+          message_id: thinkMsg.message_id,
+          text: `⏳ <b>در حال پردازش...</b>${thinkPromptNotice}\n⏱ <code>${seconds} ثانیه</code>`,
+          parse_mode: 'HTML',
+          reply_markup: cancelKeyboard,
+        }).catch(() => {});
+      }
     }
   })();
 
   try {
-    // Wall-cap of the platform is ∈ (25s, 30s] — 17s for the whole chat call
-    // leaves room for the photo download above and the cleanup below.
-    const result = await withTimeout(sendChat(user, from.id, promptWithImages), 24000);
+    const result = await withTimeout(sendChat(user, from.id, promptWithImages, isStreamEnabled ? onStream : null), 24000);
 
     if (await isChatRequestCancelled(user.id, reqId)) {
       return;
@@ -1187,12 +1280,13 @@ export default async function (message) {
 
     // 3. Deliver both inline Photo preview AND lossless Document file for each image
     if (generatedImages.length > 0) {
+      const manusKey = await manusApiKeyFor(user);
       for (let i = 0; i < generatedImages.length; i++) {
         const imgUrl = generatedImages[i];
         let fileName = decodeURIComponent(imgUrl.split('?')[0].split('/').pop() || `output_${i + 1}.png`);
         if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(fileName)) fileName += '.png';
 
-        const fileData = await fetchImageBytes(imgUrl);
+        const fileData = await fetchImageBytes(imgUrl, manusKey);
 
         // 3a. Inline Photo (instant visual preview in chat)
         const photoPayload = fileData

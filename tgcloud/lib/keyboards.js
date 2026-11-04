@@ -48,29 +48,39 @@ export function sanitizeTelegramHtml(str) {
  * ugly download links or raw URLs from the descriptive text.
  */
 export function extractMediaAndCleanText(rawText) {
-  if (!rawText) return { images: [], cleanText: '' };
+  if (!rawText || typeof rawText !== 'string') return { images: [], cleanText: '' };
 
   const images = [];
   const foundUrls = new Set();
+  const fileHostHints = [
+    'manuscdn.com',
+    'files.manus',
+    'manus.im',
+    'manus-assets',
+    'amazonaws.com',
+    's3.',
+    'blob.core.windows.net',
+    'googleusercontent.com',
+  ];
 
   // 1. Matches markdown links and images: [title](url) or ![title](url)
-  const mdLinkRegex = /!?\[([^\]]*)\]\((https?:\/\/[^\s\)]+)\)/g;
+  const mdLinkRegex = /!?\[([^\]]*)\]\((https?:\/\/[^\s\)]+|\/[^\)]+)\)/g;
   for (const m of rawText.matchAll(mdLinkRegex)) {
     const label = (m[1] || '').toLowerCase();
     const url = m[2];
     const u = url.toLowerCase();
 
     const isImage =
-      u.includes('manuscdn.com') ||
-      u.includes('files.manus') ||
+      fileHostHints.some((h) => u.includes(h)) ||
       /\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(u) ||
       /\.(png|jpe?g|webp|gif|bmp)$/i.test(label) ||
       label.includes('تصویر') ||
       label.includes('عکس') ||
       label.includes('image') ||
-      label.includes('photo');
+      label.includes('photo') ||
+      label.includes('portrait');
 
-    if (isImage && !foundUrls.has(url)) {
+    if (isImage && url.startsWith('http') && !foundUrls.has(url)) {
       foundUrls.add(url);
       images.push(url);
     }
@@ -82,7 +92,7 @@ export function extractMediaAndCleanText(rawText) {
     const url = m[0];
     const u = url.toLowerCase();
     const isImage =
-      u.includes('manuscdn.com') ||
+      fileHostHints.some((h) => u.includes(h)) ||
       /\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(u);
 
     if (isImage && !foundUrls.has(url)) {
@@ -91,12 +101,12 @@ export function extractMediaAndCleanText(rawText) {
     }
   }
 
-  // 3. Clean the text: remove the markdown image/download links and unsightly URLs
+  // 3. Clean the text safely
   let cleanText = rawText;
 
-  // Remove markdown links that point to images
-  cleanText = cleanText.replace(/!?\[([^\]]*)\]\((https?:\/\/[^\s\)]+)\)/g, (fullMatch, label, url) => {
-    if (foundUrls.has(url)) return '';
+  // Remove markdown links that point to images or local sandbox paths
+  cleanText = cleanText.replace(/!?\[([^\]]*)\]\((https?:\/\/[^\s\)]+|\/[^\)]+)\)/g, (fullMatch, label, url) => {
+    if (foundUrls.has(url) || url.startsWith('/home/ubuntu') || url.startsWith('/tmp')) return '';
     return fullMatch;
   });
 
@@ -105,10 +115,12 @@ export function extractMediaAndCleanText(rawText) {
     cleanText = cleanText.split(imgUrl).join('');
   }
 
-  // Clean common phrases left behind like "دانلود تصویر:", "تصویر نهایی:", bracketed placeholders
+  // Clean common phrases left behind and remove lone stray brackets
   cleanText = cleanText
     .replace(/(?:دانلود\s+(?:تصویر|عکس|فایل)[^\n:]*[:：]?)/gi, '')
     .replace(/\[(?:تصویر|عکس)[^\]]*\]/gi, '')
+    .replace(/^\s*\[\s*$/gm, '')
+    .replace(/\[\s*$/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
@@ -124,6 +136,7 @@ export function mainMenuKeyboard(user, combo, key = null) {
   const sessionBtn = user?.chatSessionActive
     ? { text: '🛑 پایان مکالمه', callback_data: 'a:end_chat' }
     : { text: '💬 شروع چت جدید', callback_data: 'a:new_chat' };
+  const streamStatus = user?.streamMode === 0 ? '⚡ استریم: ⚪ خاموش' : '⚡ استریم: 🟢 روشن';
   const miniAppUrl = buildMiniAppUrl(user?.tgId || 0);
   return {
     inline_keyboard: [
@@ -138,7 +151,10 @@ export function mainMenuKeyboard(user, combo, key = null) {
         { text: '🌐 ارائه‌دهنده‌ها', callback_data: 'a:providers' },
       ],
       [
+        { text: streamStatus, callback_data: 'a:toggle_stream' },
         { text: '📊 آمار توکن‌ها', callback_data: 'a:stats' },
+      ],
+      [
         { text: '❓ راهنما', callback_data: 'a:help' },
       ],
     ],

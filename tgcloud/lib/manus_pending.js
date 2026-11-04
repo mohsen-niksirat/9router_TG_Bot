@@ -64,12 +64,23 @@ export async function manusApiKeyFor(user) {
   }
 }
 
-async function fetchImageBytes(url) {
+export async function fetchImageBytes(url, apiKey = '') {
   try {
-    const res = await withTimeout(fetch(url), 12000);
+    const headers = {};
+    if (apiKey) {
+      headers['x-manus-api-key'] = apiKey;
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    let res = await withTimeout(fetch(url, { headers }), 12000).catch(() => null);
+    if ((!res || !res.ok) && apiKey) {
+      // Retry without headers for signed/presigned S3 endpoints
+      res = await withTimeout(fetch(url), 12000).catch(() => null);
+    }
+
     if (res && res.ok) {
       const buf = await res.arrayBuffer();
-      if (buf && buf.byteLength > 0) {
+      if (buf && buf.byteLength > 100) {
         const ct = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
         const mime = ct.includes('webp') ? 'image/webp' : (ct.includes('jpeg') || ct.includes('jpg') ? 'image/jpeg' : 'image/png');
         return { bytes: new Uint8Array(buf), mime };
@@ -81,7 +92,7 @@ async function fetchImageBytes(url) {
   return null;
 }
 
-export async function sendFullResult(chatId, taskId, snap) {
+export async function sendFullResult(chatId, taskId, snap, apiKey = '') {
   const rawText = (snap.assistantText || '').trim();
   const fromTask = Array.from(new Set(snap.mediaList || []))
     .filter((u) => typeof u === 'string' && u.startsWith('http'));
@@ -104,28 +115,54 @@ export async function sendFullResult(chatId, taskId, snap) {
       let fileName = decodeURIComponent(imgUrl.split('?')[0].split('/').pop() || `output_${i + 1}.png`);
       if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(fileName)) fileName += '.png';
 
-      const fileData = await fetchImageBytes(imgUrl);
+      const fileData = await fetchImageBytes(imgUrl, apiKey);
       const photoPayload = fileData
         ? new InputFile(fileData.bytes, fileName, { type: fileData.mime })
         : imgUrl;
 
       // 2a. Photo preview
-      await api.sendPhoto({
-        chat_id: chatId,
-        photo: photoPayload,
-        caption: `🖼️ عکس ─── ${fileName}`,
-      }).catch((err) => console.warn('[9Router] sendPhoto failed:', err));
+      let photoSent = false;
+      try {
+        await api.sendPhoto({
+          chat_id: chatId,
+          photo: photoPayload,
+          caption: `🖼️ عکس ─── ${fileName}`,
+        });
+        photoSent = true;
+      } catch (err) {
+        console.warn('[9Router] sendPhoto failed:', err);
+      }
 
       // 2b. Original Document (Lossless full-quality)
-      const docPayload = fileData
-        ? new InputFile(fileData.bytes, fileName, { type: fileData.mime })
-        : imgUrl;
+      let docSent = false;
+      try {
+        const docPayload = fileData
+          ? new InputFile(fileData.bytes, fileName, { type: fileData.mime })
+          : imgUrl;
 
-      await api.sendDocument({
-        chat_id: chatId,
-        document: docPayload,
-        caption: `📎 فایل اصلی ─── ${fileName}`,
-      }).catch((err) => console.warn('[9Router] sendDocument failed:', err));
+        await api.sendDocument({
+          chat_id: chatId,
+          document: docPayload,
+          caption: `📎 فایل اصلی ─── ${fileName}`,
+        });
+        docSent = true;
+      } catch (err) {
+        console.warn('[9Router] sendDocument failed:', err);
+      }
+
+      // Fallback: If both direct sending failed, send button with direct link
+      if (!photoSent && !docSent) {
+        await api.sendMessage({
+          chat_id: chatId,
+          text: `📥 <b>فایل خروجی: ${fileName}</b>`,
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: `🖼️ دانلود مستقیم ${fileName}`, url: imgUrl }],
+            ],
+          },
+        }).catch(() => {});
+      }
     }
     return;
   }
@@ -191,7 +228,7 @@ export async function deliverPendingTasks(user, chat) {
         }
 
         if (snap.assistantText || (snap.mediaList && snap.mediaList.length) || snap.agentStatus === 'completed' || snap.agentStatus === 'stopped') {
-          await sendFullResult(row.chatId, row.taskId, snap);
+          await sendFullResult(row.chatId, row.taskId, snap, apiKey);
           await db.delete(pendingTasks).where(eq(pendingTasks.id, row.id)).run();
           continue;
         }

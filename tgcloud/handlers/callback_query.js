@@ -44,6 +44,7 @@ import {
   isBotAdmin,
   getBotAdminStats,
   getUsersPage,
+  toggleUserStreamMode,
 } from 'lib/db';
 import { sendChat } from 'lib/chat';
 import { decryptKey, maskKey } from 'lib/crypto';
@@ -162,7 +163,7 @@ async function handleCallback(query) {
         text: '✅ خروجی آماده شد!',
       });
 
-      await sendFullResult(chatId, taskId, snap);
+      await sendFullResult(chatId, taskId, snap, apiKey);
       await db.delete(pendingTasks).where(and(eq(pendingTasks.userId, user.id), eq(pendingTasks.taskId, taskId))).run();
     } catch (err) {
       console.warn('[9Router] manus check error:', err);
@@ -172,6 +173,25 @@ async function handleCallback(query) {
         show_alert: true,
       });
     }
+    return;
+  }
+
+  // ─── Toggle Stream Mode ────────────────────────────────────────────────────
+  if (data === 'a:toggle_stream') {
+    const next = await toggleUserStreamMode(user.id);
+    const updatedUser = await getUser(from.id);
+    const comboRaw = await getActiveCombo(updatedUser);
+    const combo = parseCombo(comboRaw);
+    const activeKey = updatedUser.activeKeyId ? await getKeyById(updatedUser.activeKeyId, updatedUser.id) : null;
+    await api.answerCallbackQuery({
+      callback_query_id: query.id,
+      text: next === 1 ? '⚡ حالت استریم روشن شد (تایپ زنده)' : '⚡ حالت استریم خاموش شد (یکجا)',
+    }).catch(() => {});
+    await edit(
+      `🤖 <b>منوی اصلی 9Router Chat</b>\n\nکمبوی فعال: <b>${combo ? escHtml(combo.name) : 'انتخاب نشده'}</b>\n\n` +
+      `⚡ وضعیت استریم: <b>${next === 1 ? '🟢 روشن (تایپ زنده)' : '⚪ خاموش (یکجا)'}</b>`,
+      mainMenuKeyboard(updatedUser, combo, activeKey)
+    );
     return;
   }
 
