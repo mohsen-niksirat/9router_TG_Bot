@@ -96,8 +96,8 @@ flowchart TD
     end
     
     Webhook --> SessionGate
-    SessionGate -- "Active Session" --> PromptResolver
-    SessionGate -- "Idle / No Session" --> Guidance["ℹ️ Session Guidance (/new)"]
+    SessionGate -->|"Active Session"| PromptResolver
+    SessionGate -->|"Idle / No Session"| Guidance["ℹ️ Session Guidance (/new)"]
     PromptResolver --> MediaBuffer
     MediaBuffer --> Router
 
@@ -130,7 +130,7 @@ flowchart TD
         CUSTOM["Custom OpenAI-Compat"]
     end
 
-    P1 & P2 & P3 & P4 --> G & GQ & DS & OAI & OR & MANUS & CUSTOM
+    PoliciesSub --> ProvidersSub
     MANUS -.-> PendingQueue
 ```
 

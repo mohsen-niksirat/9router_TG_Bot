@@ -277,6 +277,10 @@ export function keyDetailKeyboard(key, allKeys) {
   const idx = sorted.findIndex((k) => k.id === key.id);
   const rows = [];
 
+  if (key.status === 'cooldown' || key.status === 'dead') {
+    rows.push([{ text: '🔄 فعال‌سازی مجدد (خروج از خنک‌سازی)', callback_data: `k:reset:${key.id}` }]);
+  }
+
   const navRow = [];
   if (idx > 0) navRow.push({ text: '⬆️ بالاتر', callback_data: `k:up:${key.id}` });
   if (idx < sorted.length - 1) navRow.push({ text: '⬇️ پایین‌تر', callback_data: `k:dn:${key.id}` });

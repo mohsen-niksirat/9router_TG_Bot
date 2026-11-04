@@ -13,6 +13,7 @@ import {
   getKeys,
   getKeyById,
   deleteKey,
+  reactivateKey,
   moveKeyPriority,
   getUserProviders,
   getProviderBySlug,
@@ -552,6 +553,33 @@ async function handleCallback(query) {
     const allKeys = await getKeys(user.id);
     const providers = await getUserProviders(user.id);
     await edit('🗑️ کلید حذف شد.', keysKeyboard(allKeys, providers));
+    return;
+  }
+
+  // Reset / Reactivate key out of cooldown or dead status
+  if (data.startsWith('k:reset:')) {
+    const keyId = parseInt(data.replace('k:reset:', ''), 10);
+    await reactivateKey(keyId, user.id);
+    const allKeys = await getKeys(user.id);
+    const k = allKeys.find((x) => x.id === keyId);
+    if (!k) { await edit('❌ کلید یافت نشد.', backKeyboard('a:keys')); return; }
+
+    const plain = await decryptKey(k.apiKeyEnc, from.id);
+    const statusIcon = k.status === 'active' ? '✅ فعال' : k.status === 'cooldown' ? '⏳ خنک‌سازی' : '❌ غیرفعال';
+    await api.answerCallbackQuery({
+      callback_query_id: query.id,
+      text: '✅ کلید با موفقیت فعال شد و از حالت خنک‌سازی خارج گردید.',
+    }).catch(() => {});
+
+    await edit(
+      `🔑 <b>${escHtml(k.label)}</b>\n\n` +
+      `ارائه‌دهنده: <b>${escHtml(k.providerSlug)}</b>\n` +
+      `وضعیت: <b>${statusIcon}</b>\n` +
+      `کلید: <code>${escHtml(maskKey(plain))}</code>\n` +
+      `توکن مصرفی: <code>${(k.totalTokens || 0).toLocaleString()}</code>\n` +
+      `اولویت: <code>${k.sortOrder}</code>`,
+      keyDetailKeyboard(k, allKeys)
+    );
     return;
   }
 

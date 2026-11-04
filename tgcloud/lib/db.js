@@ -230,6 +230,14 @@ export async function deleteKey(id, userId) {
   await db.delete(userKeys).where(and(eq(userKeys.id, id), eq(userKeys.userId, userId))).run();
 }
 
+export async function reactivateKey(id, userId) {
+  await db.update(userKeys).set({
+    status: 'active',
+    cooldownUntil: 0,
+    failureCount: 0,
+  }).where(and(eq(userKeys.id, id), eq(userKeys.userId, userId))).run();
+}
+
 export async function moveKeyPriority(keyId, direction, userId) {
   const all = await db.select().from(userKeys)
     .where(eq(userKeys.userId, userId))
