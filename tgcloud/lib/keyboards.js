@@ -4,9 +4,10 @@
  */
 
 import { ROUTING_POLICIES } from 'lib/providers';
+import { APP_BASE_URL } from 'lib/config';
 
 // ─── Mini App ─────────────────────────────────────────────────────────────────
-export const MINI_APP_BASE_URL = 'https://app9029829582.tgcloud.ai';
+export const MINI_APP_BASE_URL = APP_BASE_URL;
 
 export function buildMiniAppUrl(tgId) {
   return `${MINI_APP_BASE_URL}/?uid=${tgId || 0}`;

@@ -1,4 +1,5 @@
 import { fetch } from 'sdk';
+import { APP_BASE_URL } from 'lib/config';
 
 /**
  * Wall-clock helpers for the tgcloud V8 isolate.
@@ -17,7 +18,7 @@ import { fetch } from 'sdk';
 // round-trip, body discarded — pure idle wall-clock time for the CPU meter.
 // Measured: 25s of this pacing survives; a busy-spin Date.now() loop hits the
 // ~3.0s CPU budget and gets the invocation killed ("CPU timer exceeded").
-const NAP_URL = 'https://app9029829582.tgcloud.ai/robots.txt';
+const NAP_URL = `${APP_BASE_URL}/robots.txt`;
 export const WITH_TIMEOUT_NOTE = 'net-paced, no abort';
 
 /** Real wall-time delay at ~zero isolate CPU cost. */

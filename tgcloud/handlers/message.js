@@ -400,6 +400,22 @@ export default async function (message) {
   }
 
   // ─── AI Chat (any text or photo) ──────────────────────────────────────────
+  if (message.voice || message.audio) {
+    await api.sendMessage({
+      chat_id: chat.id,
+      text: '🎙️ دریافت پیام صوتی در حال حاضر پشتیبانی نمی‌شود. لطفاً پیام خود را به صورت متن یا تصویر ارسال فرمایید.',
+    });
+    return;
+  }
+
+  if (message.sticker) {
+    await api.sendMessage({
+      chat_id: chat.id,
+      text: '🎨 استیکر پشتیبانی نمی‌شود. لطفاً پیام متنی یا عکس بفرستید.',
+    });
+    return;
+  }
+
   const comboRaw = await getActiveCombo(user);
   const combo = parseCombo(comboRaw);
 

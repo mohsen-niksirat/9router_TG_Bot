@@ -46,6 +46,17 @@ export async function getOrCreateUser(tgUser) {
           })
           .where(eq(userProviders.id, found.id))
           .run();
+      } else {
+        try {
+          const currentModels = JSON.parse(found.models || '[]');
+          const missing = p.models.filter((m) => !currentModels.includes(m));
+          if (missing.length > 0) {
+            await db.update(userProviders)
+              .set({ models: JSON.stringify([...currentModels, ...missing]) })
+              .where(eq(userProviders.id, found.id))
+              .run();
+          }
+        } catch {}
       }
     }
     return { user, isNew: false };

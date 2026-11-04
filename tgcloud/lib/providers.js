@@ -13,6 +13,7 @@ export const BUILTIN_PROVIDERS = [
     models: [
       'gemini-2.5-flash-lite',
       'gemini-2.5-flash',
+      'gemini-2.0-flash',
       'gemini-2.5-pro',
       'gemini-3.1-flash-lite',
       'gemini-3.1-flash',
@@ -27,6 +28,7 @@ export const BUILTIN_PROVIDERS = [
     models: [
       'llama-3.3-70b-versatile',
       'llama-3.1-8b-instant',
+      'deepseek-r1-distill-llama-70b',
       'mixtral-8x7b-32768',
       'gemma2-9b-it',
     ],
@@ -53,9 +55,11 @@ export const BUILTIN_PROVIDERS = [
     models: [
       'google/gemini-2.0-flash-lite-001',
       'google/gemini-2.5-flash',
-      'meta-llama/llama-3.3-70b-instruct',
-      'anthropic/claude-sonnet-4',
+      'deepseek/deepseek-r1',
       'deepseek/deepseek-chat',
+      'meta-llama/llama-3.3-70b-instruct',
+      'anthropic/claude-3.7-sonnet',
+      'anthropic/claude-sonnet-4',
     ],
   },
   {
