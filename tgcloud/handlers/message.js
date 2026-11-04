@@ -29,6 +29,8 @@ import {
   deleteSavedPrompt,
   resolveSavedPrompts,
   isChatRequestCancelled,
+  setGroupMuted,
+  isGroupMuted,
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
@@ -67,29 +69,205 @@ const TEXT_CODE_EXTS = [
   '.env', '.log', '.csv', '.tsv', '.ini', '.conf', '.properties'
 ];
 
+let cachedBotInfo = null;
+async function getBotInfo() {
+  if (!cachedBotInfo) {
+    cachedBotInfo = await api.getMe().catch(() => null);
+  }
+  return cachedBotInfo;
+}
+
+async function isGroupAdmin(chatId, userId) {
+  try {
+    const member = await api.getChatMember({ chat_id: chatId, user_id: userId });
+    return member && ['creator', 'administrator'].includes(member.status);
+  } catch {
+    return false;
+  }
+}
+
 export default async function (message) {
   if (!message || !message.chat) return;
   const chat = message.chat;
   const from = message.from;
   if (!from || from.is_bot) return;
 
+  const isGroup = chat.type === 'group' || chat.type === 'supergroup';
   const { user, isNew } = await getOrCreateUser(from);
-  const text = (message.text || message.caption || '').trim();
+  let text = (message.text || message.caption || '').trim();
 
-  // Bind Telegram Menu Button directly to Mini App
-  api.setChatMenuButton({
-    chat_id: chat.id,
-    menu_button: {
-      type: 'web_app',
-      text: 'مینی‌اپ چت 🤖',
-      web_app: { url: buildMiniAppUrl(from.id) },
-    },
-  }).catch(() => {});
+  // Bind Telegram Menu Button directly to Mini App (Private chats only)
+  if (!isGroup) {
+    api.setChatMenuButton({
+      chat_id: chat.id,
+      menu_button: {
+        type: 'web_app',
+        text: 'مینی‌اپ چت 🤖',
+        web_app: { url: buildMiniAppUrl(from.id) },
+      },
+    }).catch(() => {});
+  }
 
   // Deliver ANY completed deferred Manus task first — queued when a task
   // outran one invocation's budget; results land in this chat automatically
   // on the user's next update, no website visit needed.
-  await deliverPendingTasks(user, chat);
+  if (!isGroup) {
+    await deliverPendingTasks(user, chat);
+  }
+
+  // ─── Group Chat Admin & Security Interception ─────────────────────────────
+  let targetReplyToId = message.message_id;
+
+  if (isGroup) {
+    const lowerText = text.toLowerCase().trim();
+    const groupMuted = await isGroupMuted(chat.id);
+
+    // Group Admin command /bot
+    const isBotCmd = lowerText === '/bot' || lowerText === 'bot' ||
+                     lowerText.startsWith('/bot ') || lowerText.startsWith('bot ');
+
+    if (isBotCmd) {
+      const isAdmin = await isGroupAdmin(chat.id, from.id);
+      if (!isAdmin) {
+        return; // Silently ignore for non-admins to prevent group clutter
+      }
+
+      if (lowerText.includes('سکوت') || lowerText.includes('mute')) {
+        await setGroupMuted(chat.id, true);
+        await api.sendMessage({
+          chat_id: chat.id,
+          text: '🔇 <b>وضعیت ربات در گروه:</b> موقتاً متوقف و در حالت سکوت قرار گرفت.',
+          parse_mode: 'HTML',
+          reply_to_message_id: message.message_id,
+          allow_sending_without_reply: true,
+        });
+        return;
+      }
+
+      if (lowerText.includes('صحبت') || lowerText.includes('unmute')) {
+        await setGroupMuted(chat.id, false);
+        await api.sendMessage({
+          chat_id: chat.id,
+          text: '🔊 <b>وضعیت ربات در گروه:</b> فعال و آماده پاسخگویی شد.',
+          parse_mode: 'HTML',
+          reply_to_message_id: message.message_id,
+          allow_sending_without_reply: true,
+        });
+        return;
+      }
+
+      if (lowerText.includes('test') || lowerText.includes('تست')) {
+        const activeCombo = await getActiveCombo(user);
+        await api.sendMessage({
+          chat_id: chat.id,
+          text:
+            `✅ <b>وضعیت ربات 9Router در گروه:</b> آنلاین و متصل!\n\n` +
+            `🔀 کمبوی پیش‌فرض شما: <b>${escHtml(activeCombo?.name || 'تعیین‌نشده')}</b>`,
+          parse_mode: 'HTML',
+          reply_to_message_id: message.message_id,
+          allow_sending_without_reply: true,
+        });
+        return;
+      }
+
+      // Default /bot help
+      await api.sendMessage({
+        chat_id: chat.id,
+        text:
+          `🛠 <b>پنل راهنمای مدیریت ربات در گروه:</b>\n\n` +
+          `🔹 <code>/bot test</code> — بررسی آنلاین بودن ربات\n` +
+          `🔹 <code>/bot سکوت</code> — متوقف کردن پاسخگویی در گروه\n` +
+          `🔹 <code>/bot صحبت</code> — فعال‌سازی مجدد پاسخگویی در گروه\n\n` +
+          `💡 <i>نکته: برای چت با ربات، کافیست آیدی ربات را منشن کنید یا روی پیام‌های آن ریپلای بزنید.</i>`,
+        parse_mode: 'HTML',
+        reply_to_message_id: message.message_id,
+        allow_sending_without_reply: true,
+      });
+      return;
+    }
+
+    if (groupMuted) {
+      return; // Group is muted by admin
+    }
+
+    // Protect private menus from leaking in groups
+    const privateCmds = ['/start', '/keys', '/combos', '/providers', '/stats', '/prompts', '/new'];
+    if (privateCmds.some(cmd => text.startsWith(cmd))) {
+      const botInfo = await getBotInfo();
+      const botUser = botInfo?.username || 'NineRouterBot';
+      await api.sendMessage({
+        chat_id: chat.id,
+        text: `⚠️ <b>منوی مدیریت و تنظیمات اختصاصی فقط در چت خصوصی (پیوی) قابل استفاده است.</b>\n\nجهت حفظ امنیت کلیدها و جلوگیری از شلوغی گروه، از دکمه زیر وارد پیوی ربات شوید:`,
+        parse_mode: 'HTML',
+        reply_to_message_id: message.message_id,
+        allow_sending_without_reply: true,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🤖 ورود به پیوی ربات', url: `https://t.me/${botUser}?start=group` }],
+          ],
+        },
+      });
+      return;
+    }
+
+    // Check if addressed in group
+    const botInfo = await getBotInfo();
+    const botUsername = (botInfo?.username || '').toLowerCase();
+    const botId = botInfo?.id;
+
+    const isReplyToBot = message.reply_to_message && String(message.reply_to_message.from?.id) === String(botId);
+    let isMentioned = false;
+
+    const entities = message.entities || message.caption_entities || [];
+    for (const ent of entities) {
+      if (ent.type === 'mention' || ent.type === 'text_mention') {
+        const mentionText = text.substring(ent.offset, ent.offset + ent.length).toLowerCase().replace('@', '');
+        if (mentionText === botUsername) {
+          isMentioned = true;
+        }
+      }
+    }
+
+    if (lowerText.includes(`@${botUsername}`)) {
+      isMentioned = true;
+    }
+
+    const callPrefixes = ['bot', 'ai', 'ربات', 'روتر'];
+    const startsWithPrefix = callPrefixes.some(p => lowerText === p || lowerText.startsWith(p + ' ') || lowerText.startsWith(p + '\n'));
+
+    if (!isReplyToBot && !isMentioned && !startsWithPrefix) {
+      return; // Stray message in group, ignore!
+    }
+
+    // Clean bot mention and prefixes from prompt
+    if (botUsername) {
+      text = text.replace(new RegExp(`@${botUsername}`, 'gi'), '').trim();
+    }
+    for (const p of callPrefixes) {
+      if (lowerText === p || lowerText.startsWith(p + ' ') || lowerText.startsWith(p + '\n')) {
+        text = text.replace(new RegExp(`^${p}(\\s+|\n)?`, 'i'), '').trim();
+        break;
+      }
+    }
+
+    // ─── Reply-to-another-user analysis ──────────────────────────────────────
+    if (message.reply_to_message && !isReplyToBot && message.reply_to_message.from) {
+      targetReplyToId = message.reply_to_message.message_id;
+      const targetUser = message.reply_to_message.from;
+      const targetName = targetUser.first_name || 'کاربر';
+      const repliedText = message.reply_to_message.text || message.reply_to_message.caption || '';
+
+      if (!message.photo && message.reply_to_message.photo) {
+        message.photo = message.reply_to_message.photo;
+      }
+      if (!message.document && message.reply_to_message.document) {
+        message.document = message.reply_to_message.document;
+      }
+
+      const promptInstruction = text.trim() ? text.trim() : 'لطفاً این پیام/فایل را بررسی و تحلیل کن و پاسخ کامل بده.';
+      text = `[پیام و محتوای ارسالی کاربر (${targetName}): "${repliedText || 'تصویر یا فایل ضمیمه'}"]\n\nدستور و پرسش درباره این پیام:\n${promptInstruction}`;
+    }
+  }
 
   // ─── Wizard FSM (intercept before commands) ────────────────────────────────
   const wState = user.wizardState || 'idle';
@@ -544,8 +722,8 @@ export default async function (message) {
   }
 
   // ─── Session Gate ─────────────────────────────────────────────────────────
-  // In normal mode, do not process stray messages into AI unless an active session is open.
-  if (!user.chatSessionActive) {
+  // In normal private chat mode, do not process stray messages into AI unless an active session is open.
+  if (!isGroup && !user.chatSessionActive) {
     const activeKey = user.activeKeyId ? await getKeyById(user.activeKeyId, user.id) : null;
     const comboRaw = await getActiveCombo(user);
     const combo = parseCombo(comboRaw);
@@ -580,6 +758,26 @@ export default async function (message) {
   const combo = parseCombo(comboRaw);
 
   if (!activeKey && (!combo || combo.providerSlugs.length === 0)) {
+    if (isGroup) {
+      const botInfo = await getBotInfo();
+      const botUser = botInfo?.username || 'NineRouter_bot';
+      await api.sendMessage({
+        chat_id: chat.id,
+        text:
+          `⚠️ <b>کلید یا کمبوی فعالی برای شما تنظیم نشده است!</b>\n\n` +
+          `جهت استفاده از ربات در گروه، لطفاً ابتدا وارد پیوی ربات شده و یک کلید یا کمبو فعال نمایید:`,
+        parse_mode: 'HTML',
+        reply_to_message_id: targetReplyToId,
+        allow_sending_without_reply: true,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔑 فعال‌سازی کلید/کمبو در پیوی', url: `https://t.me/${botUser}?start=group_key` }],
+          ],
+        },
+      });
+      return;
+    }
+
     await api.sendMessage({
       chat_id: chat.id,
       text:
@@ -591,6 +789,17 @@ export default async function (message) {
       reply_markup: mainMenuKeyboard(user, null),
     });
     return;
+  }
+
+  // ─── Prompts & Input Preparation ───────────────────────────────────────────
+  let promptWithImages = text;
+  let appliedPromptTitle = null;
+
+  // Resolve saved prompts against incoming text/caption
+  if (text) {
+    const pRes = await resolveSavedPrompts(user.id, text);
+    promptWithImages = pRes.resolvedText;
+    appliedPromptTitle = pRes.matchedTitle;
   }
 
   // ─── Documents: Code & Text Files ─────────────────────────────────────────
@@ -614,6 +823,8 @@ export default async function (message) {
         chat_id: chat.id,
         text: `⚠️ فرمت فایل «${escHtml(rawFileName)}» پشتیبانی نمی‌شود.\n\nلطفاً فایل‌های سورس‌کد و متنی (مانند py, js, json, txt, html, css, cpp, java, sql, md, csv) یا عکس ارسال فرمایید.`,
         parse_mode: 'HTML',
+        reply_to_message_id: isGroup ? targetReplyToId : undefined,
+        allow_sending_without_reply: true,
       });
       return;
     }
@@ -623,6 +834,8 @@ export default async function (message) {
         chat_id: chat.id,
         text: `⚠️ فایل «${escHtml(rawFileName)}» بزرگتر از سقف مجاز ۵۰۰ کیلوبایت است؛ لطفاً فایل کوچکتری بفرستید.`,
         parse_mode: 'HTML',
+        reply_to_message_id: isGroup ? targetReplyToId : undefined,
+        allow_sending_without_reply: true,
       });
       return;
     }
@@ -648,6 +861,8 @@ export default async function (message) {
         chat_id: chat.id,
         text: `❌ خطا در دانلود یا خواندن محتوای فایل «${escHtml(rawFileName)}».`,
         parse_mode: 'HTML',
+        reply_to_message_id: isGroup ? targetReplyToId : undefined,
+        allow_sending_without_reply: true,
       });
       return;
     }
@@ -656,16 +871,6 @@ export default async function (message) {
   // ─── Multimodal Photos & Media Group (Albums) ─────────────────────────────
   const photos = message.photo;
   const mgId = message.media_group_id;
-
-  let promptWithImages = text;
-  let appliedPromptTitle = null;
-
-  // Resolve saved prompts against incoming text/caption
-  if (text) {
-    const pRes = await resolveSavedPrompts(user.id, text);
-    promptWithImages = pRes.resolvedText;
-    appliedPromptTitle = pRes.matchedTitle;
-  }
 
   if (photos || isImageDoc) {
     const fileId = photos ? photos[photos.length - 1].file_id : message.document.file_id;
@@ -757,6 +962,10 @@ export default async function (message) {
     }
   }
 
+  if (!promptWithImages && (photos || isImageDoc)) {
+    promptWithImages = 'لطفاً این تصویر/فایل را به دقت تحلیل کن و توضیح بده.';
+  }
+
   if (!promptWithImages) return;
 
   // Show typing... then call AI
@@ -778,6 +987,8 @@ export default async function (message) {
     chat_id: chat.id,
     text: `⏳ <b>در حال پردازش...</b>${thinkPromptNotice}`,
     parse_mode: 'HTML',
+    reply_to_message_id: isGroup ? targetReplyToId : undefined,
+    allow_sending_without_reply: true,
     reply_markup: cancelKeyboard,
   });
 
@@ -821,6 +1032,26 @@ export default async function (message) {
       await enqueuePendingTask(user.id, chat.id, deferredTaskId);
     }
     const footer = `\n\n<i>—— ${result.provider} / ${result.model}</i>`;
+    const userMention = `<a href="tg://user?id=${from.id}">${escHtml(from.first_name || 'کاربر')}</a>`;
+    const groupHeader = isGroup ? `👤 ${userMention} <i>(پاسخ هوش مصنوعی)</i>:\n\n` : '';
+
+    const actionsMarkup = isGroup
+      ? (deferredTaskId
+          ? {
+              inline_keyboard: [
+                [{ text: '🔄 دریافت تصویر و نتیجه نهایی', callback_data: `manus:check:${deferredTaskId}` }],
+              ],
+            }
+          : undefined)
+      : (deferredTaskId
+          ? {
+              inline_keyboard: [
+                [{ text: '🔄 دریافت تصویر و نتیجه نهایی', callback_data: `manus:check:${deferredTaskId}` }],
+                [{ text: '🛑 پایان مکالمه', callback_data: 'a:end_chat' }],
+                [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
+              ],
+            }
+          : chatActionsKeyboard(true));
 
     // 1. Collect all AI-generated or returned image URLs
     const mdImgMatches = Array.from(result.text.matchAll(/!\[.*?\]\((https?:\/\/[^\s\)]+)\)/g)).map((m) => m[1]);
@@ -834,16 +1065,19 @@ export default async function (message) {
       // Telegram parses caption as HTML — sanitize so `<br>` / `3 < 4` in model
       // output can't cause a "can't parse entities" 400 instead of delivery.
       const formattedDesc = sanitizeTelegramHtml(cleanDesc);
+      const fullCaption = `${groupHeader}${formattedDesc}${footer}`;
 
       // If caption fits within Telegram's 1024 photo caption limit
-      if (formattedDesc.length <= 880) {
+      if (fullCaption.length <= 1000) {
         try {
           await api.sendPhoto({
             chat_id: chat.id,
             photo: firstImg,
-            caption: formattedDesc ? `${formattedDesc}${footer}` : footer.trim(),
+            caption: fullCaption.trim(),
             parse_mode: 'HTML',
-            reply_markup: chatActionsKeyboard(true),
+            reply_to_message_id: isGroup ? targetReplyToId : undefined,
+            allow_sending_without_reply: true,
+            reply_markup: actionsMarkup,
           });
           await api.deleteMessage({ chat_id: chat.id, message_id: thinkMsg.message_id }).catch(() => {});
 
@@ -852,6 +1086,8 @@ export default async function (message) {
               chat_id: chat.id,
               photo: generatedImages[i],
               caption: `🖼️ تصویر خروجی ${i + 1}`,
+              reply_to_message_id: isGroup ? targetReplyToId : undefined,
+              allow_sending_without_reply: true,
             }).catch(() => {});
           }
           return;
@@ -860,27 +1096,31 @@ export default async function (message) {
         }
       }
 
-      // If caption is long (> 880 chars): send photo with brief caption, then full text via message!
+      // If caption is long (> 1000 chars): send photo with brief caption, then full text via message!
       try {
         await api.sendPhoto({
           chat_id: chat.id,
           photo: firstImg,
-          caption: `🖼️ <b>تصویر خروجی هوش مصنوعی</b>${footer}`,
+          caption: `${groupHeader}🖼️ <b>تصویر خروجی هوش مصنوعی</b>${footer}`,
           parse_mode: 'HTML',
+          reply_to_message_id: isGroup ? targetReplyToId : undefined,
+          allow_sending_without_reply: true,
         });
         for (let i = 1; i < generatedImages.length; i++) {
           await api.sendPhoto({
             chat_id: chat.id,
             photo: generatedImages[i],
             caption: `🖼️ تصویر خروجی ${i + 1}`,
+            reply_to_message_id: isGroup ? targetReplyToId : undefined,
+            allow_sending_without_reply: true,
           }).catch(() => {});
         }
         await api.editMessageText({
           chat_id: chat.id,
           message_id: thinkMsg.message_id,
-          text: (formattedDesc.slice(0, 3950) + footer).slice(0, 4096),
+          text: (groupHeader + formattedDesc.slice(0, 3900) + footer).slice(0, 4096),
           parse_mode: 'HTML',
-          reply_markup: chatActionsKeyboard(true),
+          reply_markup: actionsMarkup,
         });
         return;
       } catch (photoErr) {
@@ -888,24 +1128,14 @@ export default async function (message) {
       }
     }
 
-    const fullText = sanitizeTelegramHtml(result.text) + footer;
-
-    const finalKeyboard = deferredTaskId
-      ? {
-          inline_keyboard: [
-            [{ text: '🔄 دریافت تصویر و نتیجه نهایی', callback_data: `manus:check:${deferredTaskId}` }],
-            [{ text: '🛑 پایان مکالمه', callback_data: 'a:end_chat' }],
-            [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
-          ],
-        }
-      : chatActionsKeyboard(true);
+    const fullText = (groupHeader + sanitizeTelegramHtml(result.text) + footer).slice(0, 4096);
 
     await api.editMessageText({
       chat_id: chat.id,
       message_id: thinkMsg.message_id,
-      text: fullText.slice(0, 4096),
+      text: fullText,
       parse_mode: 'HTML',
-      reply_markup: finalKeyboard,
+      reply_markup: actionsMarkup,
     });
   } catch (err) {
     if (await isChatRequestCancelled(user.id, reqId)) {
@@ -922,7 +1152,7 @@ export default async function (message) {
         : `❌ <b>خطا در پردازش پیام:</b>\n<code>${escHtml(err.message)}</code>\n\n` +
           `💡 مطمئن شو کلید API فعال در کمبو داری.`,
       parse_mode: 'HTML',
-      reply_markup: chatActionsKeyboard(true),
+      reply_markup: isGroup ? undefined : chatActionsKeyboard(true),
     }).catch(() => {});
   } finally {
     finished = true;

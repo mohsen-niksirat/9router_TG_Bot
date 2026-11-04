@@ -1,6 +1,6 @@
 import { db } from 'sdk';
 import { eq, and, desc, asc, sql } from 'sdk/db';
-import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer, savedPrompts, chatClaims } from 'schema';
+import { users, userProviders, userKeys, combos, chatHistory, tokenUsage, mediaGroupBuffer, savedPrompts, chatClaims, config } from 'schema';
 import { encryptKey, decryptKey } from 'lib/crypto';
 import { BUILTIN_PROVIDERS } from 'lib/providers';
 
@@ -611,6 +611,28 @@ export async function isChatRequestCancelled(userId, reqId) {
       .where(and(eq(chatClaims.userId, userId), eq(chatClaims.fingerprint, `cancel_${reqId}`)))
       .get();
     return !!row;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Group Chat Controls ──────────────────────────────────────────────────────
+export async function setGroupMuted(chatId, isMuted) {
+  try {
+    const k = `group_muted_${chatId}`;
+    await db.delete(config).where(eq(config.key, k)).run();
+    if (isMuted) {
+      await db.insert(config).values({ key: k, value: '1' }).run();
+    }
+  } catch (e) {
+    console.warn('[9Router] setGroupMuted error:', e);
+  }
+}
+
+export async function isGroupMuted(chatId) {
+  try {
+    const row = await db.select().from(config).where(eq(config.key, `group_muted_${chatId}`)).get();
+    return row?.value === '1';
   } catch {
     return false;
   }
