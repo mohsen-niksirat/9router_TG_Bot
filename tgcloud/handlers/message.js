@@ -94,21 +94,21 @@ async function isGroupAdmin(chatId, userId) {
   }
 }
 
-async function toPhotoPayload(url) {
+async function fetchImageBytes(url) {
   try {
-    const res = await withTimeout(fetch(url), 10000);
+    const res = await withTimeout(fetch(url), 12000);
     if (res && res.ok) {
       const buf = await res.arrayBuffer();
       if (buf && buf.byteLength > 0) {
         const ct = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
         const mime = ct.includes('webp') ? 'image/webp' : (ct.includes('jpeg') || ct.includes('jpg') ? 'image/jpeg' : 'image/png');
-        return new InputFile(new Uint8Array(buf), 'output.png', { type: mime });
+        return { bytes: new Uint8Array(buf), mime };
       }
     }
   } catch (e) {
-    console.warn('[9Router] toPhotoPayload fetch failed:', e);
+    console.warn('[9Router] fetchImageBytes failed:', e);
   }
-  return url;
+  return null;
 }
 
 export default async function (message) {
@@ -1172,134 +1172,10 @@ export default async function (message) {
     // 1. Collect all AI-generated or returned image URLs & clean description
     const { images: generatedImages, cleanText: cleanDesc } = extractMediaAndCleanText(result.text);
 
-    if (generatedImages.length > 0) {
-      const firstImgUrl = generatedImages[0];
-      const photoPayload = await toPhotoPayload(firstImgUrl);
-      const formattedDesc = sanitizeTelegramHtml(cleanDesc);
-      const fullCaption = `${groupHeader}${formattedDesc}${footer}`.trim();
-
-      // If caption fits within Telegram's 1024 photo caption limit
-      if (fullCaption.length <= 1000) {
-        let sent = false;
-        try {
-          await api.sendPhoto({
-            chat_id: chat.id,
-            photo: photoPayload,
-            caption: fullCaption,
-            parse_mode: 'HTML',
-            reply_to_message_id: isGroup ? targetReplyToId : undefined,
-            allow_sending_without_reply: true,
-            reply_markup: actionsMarkup,
-          });
-          sent = true;
-        } catch (photoErr) {
-          console.warn('[9Router] sendPhoto caption failed, attempting sendDocument:', photoErr);
-          try {
-            await api.sendDocument({
-              chat_id: chat.id,
-              document: photoPayload,
-              caption: fullCaption,
-              parse_mode: 'HTML',
-              reply_to_message_id: isGroup ? targetReplyToId : undefined,
-              allow_sending_without_reply: true,
-              reply_markup: actionsMarkup,
-            });
-            sent = true;
-          } catch (docErr) {
-            console.warn('[9Router] sendDocument also failed:', docErr);
-          }
-        }
-
-        if (sent) {
-          await api.deleteMessage({ chat_id: chat.id, message_id: thinkMsg.message_id }).catch(() => {});
-
-          for (let i = 1; i < generatedImages.length; i++) {
-            const extraPayload = await toPhotoPayload(generatedImages[i]);
-            await api.sendPhoto({
-              chat_id: chat.id,
-              photo: extraPayload,
-              caption: `🖼️ تصویر خروجی ${i + 1}`,
-              reply_to_message_id: isGroup ? targetReplyToId : undefined,
-              allow_sending_without_reply: true,
-            }).catch(async () => {
-              await api.sendDocument({
-                chat_id: chat.id,
-                document: extraPayload,
-                caption: `🖼️ تصویر خروجی ${i + 1}`,
-                reply_to_message_id: isGroup ? targetReplyToId : undefined,
-                allow_sending_without_reply: true,
-              }).catch(() => {});
-            });
-          }
-          return;
-        }
-      }
-
-      // If caption is long (> 1000 chars) or initial combined caption failed:
-      try {
-        let sent = false;
-        try {
-          await api.sendPhoto({
-            chat_id: chat.id,
-            photo: photoPayload,
-            caption: `${groupHeader}🖼️ <b>تصویر خروجی هوش مصنوعی</b>${footer}`,
-            parse_mode: 'HTML',
-            reply_to_message_id: isGroup ? targetReplyToId : undefined,
-            allow_sending_without_reply: true,
-          });
-          sent = true;
-        } catch (errPhoto) {
-          await api.sendDocument({
-            chat_id: chat.id,
-            document: photoPayload,
-            caption: `${groupHeader}🖼️ <b>فایل خروجی هوش مصنوعی</b>${footer}`,
-            parse_mode: 'HTML',
-            reply_to_message_id: isGroup ? targetReplyToId : undefined,
-            allow_sending_without_reply: true,
-          });
-          sent = true;
-        }
-
-        if (sent) {
-          for (let i = 1; i < generatedImages.length; i++) {
-            const extraPayload = await toPhotoPayload(generatedImages[i]);
-            await api.sendPhoto({
-              chat_id: chat.id,
-              photo: extraPayload,
-              caption: `🖼️ تصویر خروجی ${i + 1}`,
-              reply_to_message_id: isGroup ? targetReplyToId : undefined,
-              allow_sending_without_reply: true,
-            }).catch(() => {});
-          }
-          await api.editMessageText({
-            chat_id: chat.id,
-            message_id: thinkMsg.message_id,
-            text: (groupHeader + formattedDesc.slice(0, 3900) + footer).slice(0, 4096),
-            parse_mode: 'HTML',
-            reply_markup: actionsMarkup,
-          });
-          return;
-        }
-      } catch (photoErr) {
-        console.warn('[9Router] sendPhoto split failed, falling back to text with button:', photoErr);
-        const fallbackMarkup = {
-          inline_keyboard: [
-            [{ text: '🖼️ دانلود مستقیم تصویر خروجی', url: firstImgUrl }],
-            ...(actionsMarkup?.inline_keyboard || []),
-          ],
-        };
-        await api.editMessageText({
-          chat_id: chat.id,
-          message_id: thinkMsg.message_id,
-          text: (groupHeader + formattedDesc.slice(0, 3900) + footer).slice(0, 4096),
-          parse_mode: 'HTML',
-          reply_markup: fallbackMarkup,
-        });
-        return;
-      }
-    }
-
-    const fullText = (groupHeader + sanitizeTelegramHtml(cleanDesc || result.text) + footer).slice(0, 4096);
+    // 2. Format description & update placeholder to display final text response with action buttons
+    const descText = cleanDesc || '✅ پردازش هوش مصنوعی با موفقیت انجام شد.';
+    const formattedDesc = sanitizeTelegramHtml(descText);
+    const fullText = (groupHeader + formattedDesc + footer).slice(0, 4096);
 
     await api.editMessageText({
       chat_id: chat.id,
@@ -1307,7 +1183,72 @@ export default async function (message) {
       text: fullText,
       parse_mode: 'HTML',
       reply_markup: actionsMarkup,
-    });
+    }).catch(() => {});
+
+    // 3. Deliver both inline Photo preview AND lossless Document file for each image
+    if (generatedImages.length > 0) {
+      for (let i = 0; i < generatedImages.length; i++) {
+        const imgUrl = generatedImages[i];
+        let fileName = decodeURIComponent(imgUrl.split('?')[0].split('/').pop() || `output_${i + 1}.png`);
+        if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(fileName)) fileName += '.png';
+
+        const fileData = await fetchImageBytes(imgUrl);
+
+        // 3a. Inline Photo (instant visual preview in chat)
+        const photoPayload = fileData
+          ? new InputFile(fileData.bytes, fileName, { type: fileData.mime })
+          : imgUrl;
+
+        let photoSent = false;
+        try {
+          await api.sendPhoto({
+            chat_id: chat.id,
+            photo: photoPayload,
+            caption: `🖼️ عکس ─── ${fileName}`,
+            reply_to_message_id: isGroup ? targetReplyToId : undefined,
+            allow_sending_without_reply: true,
+          });
+          photoSent = true;
+        } catch (photoErr) {
+          console.warn('[9Router] sendPhoto failed:', photoErr);
+        }
+
+        // 3b. Document file (full uncompressed lossless resolution)
+        const docPayload = fileData
+          ? new InputFile(fileData.bytes, fileName, { type: fileData.mime })
+          : imgUrl;
+
+        let docSent = false;
+        try {
+          await api.sendDocument({
+            chat_id: chat.id,
+            document: docPayload,
+            caption: `📎 فایل اصلی ─── ${fileName}`,
+            reply_to_message_id: isGroup ? targetReplyToId : undefined,
+            allow_sending_without_reply: true,
+          });
+          docSent = true;
+        } catch (docErr) {
+          console.warn('[9Router] sendDocument failed:', docErr);
+        }
+
+        // Fallback: If both photo & document failed, provide direct download button
+        if (!photoSent && !docSent) {
+          await api.sendMessage({
+            chat_id: chat.id,
+            text: `📥 <b>فایل خروجی: ${escHtml(fileName)}</b>`,
+            parse_mode: 'HTML',
+            reply_to_message_id: isGroup ? targetReplyToId : undefined,
+            allow_sending_without_reply: true,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: `🖼️ دانلود مستقیم ${fileName}`, url: imgUrl }],
+              ],
+            },
+          }).catch(() => {});
+        }
+      }
+    }
   } catch (err) {
     if (await isChatRequestCancelled(user.id, reqId)) {
       return;

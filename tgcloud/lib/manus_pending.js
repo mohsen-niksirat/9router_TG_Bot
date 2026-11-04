@@ -64,21 +64,21 @@ export async function manusApiKeyFor(user) {
   }
 }
 
-async function toPhotoPayload(url) {
+async function fetchImageBytes(url) {
   try {
-    const res = await withTimeout(fetch(url), 10000);
+    const res = await withTimeout(fetch(url), 12000);
     if (res && res.ok) {
       const buf = await res.arrayBuffer();
       if (buf && buf.byteLength > 0) {
         const ct = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
         const mime = ct.includes('webp') ? 'image/webp' : (ct.includes('jpeg') || ct.includes('jpg') ? 'image/jpeg' : 'image/png');
-        return new InputFile(new Uint8Array(buf), 'output.png', { type: mime });
+        return { bytes: new Uint8Array(buf), mime };
       }
     }
   } catch (e) {
-    console.warn('[9Router] toPhotoPayload fetch failed:', e);
+    console.warn('[9Router] fetchImageBytes failed:', e);
   }
-  return url;
+  return null;
 }
 
 export async function sendFullResult(chatId, taskId, snap) {
@@ -87,81 +87,50 @@ export async function sendFullResult(chatId, taskId, snap) {
     .filter((u) => typeof u === 'string' && u.startsWith('http'));
   const extracted = extractMediaAndCleanText(rawText);
   const images = Array.from(new Set([...fromTask, ...extracted.images]));
-  const text = extracted.cleanText;
+  const text = extracted.cleanText || '✅ پردازش هوش مصنوعی با موفقیت به پایان رسید.';
   const header = '🎨 <b>نتیجه نهایی Manus آماده شد</b>';
 
+  // 1. Send the text summary
+  await api.sendMessage({
+    chat_id: chatId,
+    text: `${header}\n\n${sanitizeTelegramHtml(text).slice(0, 3900)}\n\n🔗 <a href="${taskLink(taskId)}">مشاهده تسک در وب‌سایت Manus</a>`,
+    parse_mode: 'HTML',
+  }).catch(() => {});
+
+  // 2. Deliver both Photo preview AND Original Document for each generated image
   if (images.length) {
-    const captionParts = [header];
-    if (text) captionParts.push(sanitizeTelegramHtml(text).slice(0, 900));
-    let photoSent = false;
-    const photoPayload = await toPhotoPayload(images[0]);
-    try {
+    for (let i = 0; i < images.length; i++) {
+      const imgUrl = images[i];
+      let fileName = decodeURIComponent(imgUrl.split('?')[0].split('/').pop() || `output_${i + 1}.png`);
+      if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(fileName)) fileName += '.png';
+
+      const fileData = await fetchImageBytes(imgUrl);
+      const photoPayload = fileData
+        ? new InputFile(fileData.bytes, fileName, { type: fileData.mime })
+        : imgUrl;
+
+      // 2a. Photo preview
       await api.sendPhoto({
         chat_id: chatId,
         photo: photoPayload,
-        caption: captionParts.join('\n\n'),
-        parse_mode: 'HTML',
-      });
-      photoSent = true;
-    } catch (e) {
-      console.warn('[9Router] sendPhoto failed, attempting sendDocument:', e);
-      try {
-        await api.sendDocument({
-          chat_id: chatId,
-          document: photoPayload,
-          caption: captionParts.join('\n\n'),
-          parse_mode: 'HTML',
-        });
-        photoSent = true;
-      } catch (docErr) {
-        console.warn('[9Router] sendDocument also failed:', docErr);
-      }
-    }
+        caption: `🖼️ عکس ─── ${fileName}`,
+      }).catch((err) => console.warn('[9Router] sendPhoto failed:', err));
 
-    if (!photoSent) {
-      await api.sendMessage({
-        chat_id: chatId,
-        text: `${header}\n\n${sanitizeTelegramHtml(text).slice(0, 3900)}`,
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🖼️ دانلود مستقیم تصویر خروجی', url: images[0] }],
-          ],
-        },
-      });
-    }
+      // 2b. Original Document (Lossless full-quality)
+      const docPayload = fileData
+        ? new InputFile(fileData.bytes, fileName, { type: fileData.mime })
+        : imgUrl;
 
-    for (let i = 1; i < images.length; i++) {
-      const extraPayload = await toPhotoPayload(images[i]);
-      await api.sendPhoto({
+      await api.sendDocument({
         chat_id: chatId,
-        photo: extraPayload,
-        caption: `🖼️ خروجی ${i + 1}`,
-      }).catch(async () => {
-        await api.sendDocument({
-          chat_id: chatId,
-          document: extraPayload,
-          caption: `🖼️ خروجی ${i + 1}`,
-        }).catch(() => {});
-      });
-    }
-
-    if (photoSent && text.length > 800) {
-      await api.sendMessage({
-        chat_id: chatId,
-        text: `📝 <b>متن کامل پاسخ:</b>\n\n${sanitizeTelegramHtml(text).slice(0, 3900)}`,
-        parse_mode: 'HTML',
-      }).catch(() => {});
+        document: docPayload,
+        caption: `📎 فایل اصلی ─── ${fileName}`,
+      }).catch((err) => console.warn('[9Router] sendDocument failed:', err));
     }
     return;
   }
 
   if (text) {
-    await api.sendMessage({
-      chat_id: chatId,
-      text: `${header}\n\n${sanitizeTelegramHtml(text).slice(0, 3900)}`,
-      parse_mode: 'HTML',
-    });
     return;
   }
 
