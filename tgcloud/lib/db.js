@@ -492,12 +492,20 @@ export async function consumeMediaGroupItems(mediaGroupId, ids) {
 }
 
 // ─── Chat Session Management ──────────────────────────────────────────────────
-export async function startChatSession(userId) {
+export async function startChatSession(userId, { comboId = null, keyId = null } = {}) {
   await clearHistory(userId);
-  await db.update(users).set({
+  const patch = {
     chatSessionActive: 1,
     currentTaskId: null,
-  }).where(eq(users.id, userId)).run();
+  };
+  if (comboId !== null) {
+    patch.activeComboId = comboId;
+    patch.activeKeyId = null;
+  } else if (keyId !== null) {
+    patch.activeKeyId = keyId;
+    patch.activeComboId = null;
+  }
+  await db.update(users).set(patch).where(eq(users.id, userId)).run();
 }
 
 export async function endChatSession(userId) {

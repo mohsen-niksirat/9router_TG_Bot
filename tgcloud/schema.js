@@ -7,6 +7,7 @@ export const users = table('users', {
   name:          text('name'),
   username:      text('username'),
   activeComboId:     integer('active_combo_id'),   // FK → combos.id (null = no combo selected)
+  activeKeyId:       integer('active_key_id'),     // FK → user_keys.id (null = using combo)
   wizardState:       text('wizard_state').default('idle'),
   wizardData:        text('wizard_data'),           // JSON context for multi-step wizards
   chatSessionActive: integer('chat_session_active').default(0), // 1 = active continuous conversation session

@@ -8,7 +8,7 @@ import { db, fetch } from 'sdk';
 import { eq, and, asc, notInArray, sql } from 'sdk/db';
 import { userKeys } from 'schema';
 import { decryptKey } from 'lib/crypto';
-import { markKeyResult, recordUsage } from 'lib/db';
+import { markKeyResult, recordUsage, getKeyById } from 'lib/db';
 import { withTimeout } from 'lib/sleep';
 
 // Every provider fetch hop is bounded: there is NO AbortController in the
@@ -528,6 +528,7 @@ export async function routeChat({
   providerRows = [],
   maxTokens = 1024,
   existingTaskId = null,
+  pinnedKeyId = null,
 }) {
   let lastError = null;
 
@@ -535,7 +536,17 @@ export async function routeChat({
     const triedKeys = [];
     // Try up to 3 *distinct* keys per provider before moving on
     for (let attempt = 0; attempt < 3; attempt++) {
-      const keyRow = await getNextKey(userId, slug, routingPolicy, triedKeys);
+      let keyRow = null;
+      if (pinnedKeyId && attempt === 0) {
+        keyRow = await getKeyById(pinnedKeyId, userId);
+        if (!keyRow || keyRow.providerSlug !== slug || keyRow.status === 'dead') {
+          keyRow = null;
+        }
+      }
+      if (!keyRow) {
+        if (pinnedKeyId && attempt > 0) break;
+        keyRow = await getNextKey(userId, slug, routingPolicy, triedKeys);
+      }
       if (!keyRow) break; // No keys for this provider
       triedKeys.push(keyRow.id);
 

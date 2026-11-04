@@ -41,6 +41,16 @@ export async function enqueuePendingTask(userId, chatId, taskId) {
 }
 
 export async function manusApiKeyFor(user) {
+  if (user?.activeKeyId) {
+    try {
+      const k = await db.select().from(userKeys)
+        .where(and(eq(userKeys.id, user.activeKeyId), eq(userKeys.userId, user.id)))
+        .get();
+      if (k && k.providerSlug === 'manus') {
+        return await decryptKey(k.apiKeyEnc, user.tgId);
+      }
+    } catch {}
+  }
   const keys = await db.select().from(userKeys)
     .where(and(eq(userKeys.userId, user.id), eq(userKeys.providerSlug, 'manus')))
     .orderBy(asc(userKeys.sortOrder), asc(userKeys.id))

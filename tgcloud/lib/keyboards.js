@@ -43,8 +43,11 @@ export function sanitizeTelegramHtml(str) {
 }
 
 // ─── Main Menu ────────────────────────────────────────────────────────────────
-export function mainMenuKeyboard(user, combo) {
-  const comboLabel = combo ? `🔀 ${combo.name}` : '🔀 بدون کمبو';
+export function mainMenuKeyboard(user, combo, key = null) {
+  let comboLabel = combo ? `🔀 ${combo.name}` : '🔀 بدون کمبو';
+  if (user?.activeKeyId && key) {
+    comboLabel = `🔑 ${key.label || key.providerSlug}`;
+  }
   const sessionBtn = user?.chatSessionActive
     ? { text: '🛑 پایان مکالمه', callback_data: 'a:end_chat' }
     : { text: '💬 شروع چت جدید', callback_data: 'a:new_chat' };
@@ -64,6 +67,55 @@ export function mainMenuKeyboard(user, combo) {
       [{ text: '❓ راهنما', callback_data: 'a:help' }],
     ],
   };
+}
+
+export function newChatPickerKeyboard(combos, keys, providers, activeComboId = null, activeKeyId = null) {
+  const rows = [];
+
+  // Fast-track active selection
+  if (activeKeyId) {
+    const k = (keys || []).find((item) => item.id === activeKeyId);
+    const p = k ? (providers || []).find((prov) => prov.slug === k.providerSlug) : null;
+    const label = k ? (k.label || p?.name || k.providerSlug) : '';
+    if (label) {
+      rows.push([{ text: `⚡ ادامه با کلید فعال: ${label}`, callback_data: `chat:pick:k:${activeKeyId}` }]);
+    }
+  } else if (activeComboId) {
+    const c = (combos || []).find((item) => item.id === activeComboId);
+    if (c) {
+      rows.push([{ text: `⚡ ادامه با کمبوی فعال: ${c.name}`, callback_data: `chat:pick:c:${activeComboId}` }]);
+    }
+  }
+
+  // Combos section
+  if (combos && combos.length > 0) {
+    rows.push([{ text: '─── 🔀 کمبوهای من ───', callback_data: 'noop' }]);
+    for (const c of combos) {
+      const activeMark = (!activeKeyId && c.id === activeComboId) ? '✅ ' : '';
+      rows.push([{ text: `${activeMark}🔀 ${c.name}`, callback_data: `chat:pick:c:${c.id}` }]);
+    }
+  }
+
+  // Keys / Providers section
+  if (keys && keys.length > 0) {
+    rows.push([{ text: '─── 🔑 کلیدهای ارائه‌دهنده‌ها ───', callback_data: 'noop' }]);
+    for (const k of keys) {
+      const p = (providers || []).find((prov) => prov.slug === k.providerSlug);
+      const provName = p ? p.name : k.providerSlug;
+      const keyLabel = k.label ? `${k.label} (${provName})` : provName;
+      const activeMark = (k.id === activeKeyId) ? '✅ ' : '';
+      rows.push([{ text: `${activeMark}🔑 ${keyLabel}`, callback_data: `chat:pick:k:${k.id}` }]);
+    }
+  }
+
+  // Actions
+  rows.push([
+    { text: '➕ کمبو جدید', callback_data: 'c:create' },
+    { text: '➕ کلید جدید', callback_data: 'k:add_pick_prov' },
+  ]);
+  rows.push([{ text: '🔙 بازگشت به منو', callback_data: 'a:menu' }]);
+
+  return { inline_keyboard: rows };
 }
 
 export function mainReplyKeyboard(tgId, isSessionActive = false) {

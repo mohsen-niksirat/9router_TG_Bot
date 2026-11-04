@@ -59,6 +59,7 @@ import {
   backKeyboard,
   promptsKeyboard,
   promptDetailKeyboard,
+  newChatPickerKeyboard,
 } from 'lib/keyboards';
 
 export default async function (query) {
@@ -167,18 +168,91 @@ async function handleCallback(query) {
     return;
   }
 
-  // ─── New Chat ──────────────────────────────────────────────────────────────
+  // ─── New Chat Setup / Picker ───────────────────────────────────────────────
   if (data === 'a:new_chat') {
-    await startChatSession(user.id);
+    const comboList = await getCombos(user.id);
+    const allKeys = await getKeys(user.id);
+    const providers = await getUserProviders(user.id);
     const comboRaw = await getActiveCombo(user);
-    const combo = parseCombo(comboRaw);
+    const activeCombo = parseCombo(comboRaw);
+    const activeKey = user.activeKeyId ? await getKeyById(user.activeKeyId, user.id) : null;
+    const activeKeyProv = activeKey ? providers.find((p) => p.slug === activeKey.providerSlug) : null;
+
+    let currentTargetInfo = 'تعیین‌نشده';
+    if (activeKey) {
+      currentTargetInfo = `🔑 کلید <b>${escHtml(activeKey.label || activeKeyProv?.name || activeKey.providerSlug)}</b> (${escHtml(activeKeyProv?.name || activeKey.providerSlug)})`;
+    } else if (activeCombo) {
+      currentTargetInfo = `🔀 کمبوی <b>${escHtml(activeCombo.name)}</b> (${escHtml(ROUTING_POLICIES[activeCombo.routingPolicy]?.name || activeCombo.routingPolicy)})`;
+    }
+
+    await edit(
+      `💬 <b>شروع گفتگوی جدید</b>\n\n` +
+      `لطفاً انتخاب کنید این گفتگو با کدام <b>کمبو</b> یا <b>کلید / ارائه‌دهنده</b> انجام شود:\n\n` +
+      `🎯 انتخاب فعال فعلی: ${currentTargetInfo}\n\n` +
+      `<i>💡 با لمس کمبو یا کلید موردنظر از لیست زیر، گفتگوی پیوسته بلافاصله آغاز خواهد شد.</i>`,
+      newChatPickerKeyboard(comboList, allKeys, providers, user.activeComboId, user.activeKeyId)
+    );
+    return;
+  }
+
+  // ─── Pick Combo for New Chat ───────────────────────────────────────────────
+  if (data.startsWith('chat:pick:c:')) {
+    const comboId = parseInt(data.replace('chat:pick:c:', ''), 10);
+    const combo = await getComboById(comboId, user.id);
+    if (!combo) {
+      await api.answerCallbackQuery({ callback_query_id: query.id, text: '❌ کمبو یافت نشد.' }).catch(() => {});
+      return;
+    }
+    await startChatSession(user.id, { comboId });
+    const parsed = parseCombo(combo);
+    const policy = ROUTING_POLICIES[parsed.routingPolicy] || { name: parsed.routingPolicy };
+
+    await api.answerCallbackQuery({
+      callback_query_id: query.id,
+      text: `✅ گفتگو با کمبوی ${combo.name} آغاز شد`,
+    }).catch(() => {});
+
     await edit(
       `💬 <b>گفتگوی جدید آغاز شد!</b>\n\n` +
-      (combo
-        ? `🔀 کمبوی فعال: <b>${escHtml(combo.name)}</b>\n\n` +
-          `<i>💡 پیام یا عکس‌های خود را ارسال فرمایید. تمامی پیام‌ها تا زمان زدن «🛑 پایان مکالمه» در همین گفتگو پیگیری می‌شوند.</i>`
-        : `⚠️ کمبویی انتخاب نشده! از منوی کمبوها یک کمبو فعال کن.`),
-      chatActionsKeyboard()
+      `🔀 کمبوی فعال: <b>${escHtml(parsed.name)}</b> (${escHtml(policy.name)})\n` +
+      `🌐 ارائه‌دهنده‌ها: <code>${escHtml(parsed.providerSlugs.join(' → '))}</code>\n\n` +
+      `<i>💡 پیام یا عکس‌های خود را ارسال فرمایید. تمامی تبادلات پیام تا زمان زدن «🛑 پایان مکالمه» در همین تسک به صورت پیوسته انجام خواهد شد.</i>\n\n` +
+      `<i>📋 برای استفاده از پرامپت‌های ذخیره‌شده، از عبارت <code>پرامپت [عنوان]</code> یا <code>#[عنوان]</code> در کپشن یا پیام استفاده کنید.</i>`,
+      chatActionsKeyboard(true)
+    );
+    await api.sendMessage({
+      chat_id: chatId,
+      text: '👇 نوار وضعیت گفتگو (چت فعال):',
+      reply_markup: mainReplyKeyboard(from.id, true),
+    }).catch(() => {});
+    return;
+  }
+
+  // ─── Pick Key for New Chat ─────────────────────────────────────────────────
+  if (data.startsWith('chat:pick:k:')) {
+    const keyId = parseInt(data.replace('chat:pick:k:', ''), 10);
+    const key = await getKeyById(keyId, user.id);
+    if (!key) {
+      await api.answerCallbackQuery({ callback_query_id: query.id, text: '❌ کلید یافت نشد.' }).catch(() => {});
+      return;
+    }
+    const prov = await getProviderBySlug(key.providerSlug, user.id);
+    await startChatSession(user.id, { keyId });
+
+    const provName = prov ? prov.name : key.providerSlug;
+    await api.answerCallbackQuery({
+      callback_query_id: query.id,
+      text: `✅ گفتگو با کلید ${key.label || provName} آغاز شد`,
+    }).catch(() => {});
+
+    await edit(
+      `💬 <b>گفتگوی جدید آغاز شد!</b>\n\n` +
+      `🔑 کلید فعال: <b>${escHtml(key.label || provName)}</b>\n` +
+      `🌐 ارائه‌دهنده: <b>${escHtml(provName)}</b>\n` +
+      `🎯 مدل پیش‌فرض: <code>${escHtml(prov?.defaultModel || 'تعیین‌نشده')}</code>\n\n` +
+      `<i>💡 پیام یا عکس‌های خود را ارسال فرمایید. تمامی تبادلات پیام تا زمان زدن «🛑 پایان مکالمه» با همین کلید و تسک پیگیری خواهد شد.</i>\n\n` +
+      `<i>📋 برای استفاده از پرامپت‌های ذخیره‌شده، از عبارت <code>پرامپت [عنوان]</code> یا <code>#[عنوان]</code> در کپشن یا پیام استفاده کنید.</i>`,
+      chatActionsKeyboard(true)
     );
     await api.sendMessage({
       chat_id: chatId,

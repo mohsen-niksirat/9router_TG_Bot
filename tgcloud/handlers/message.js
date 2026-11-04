@@ -6,6 +6,7 @@ import {
   clearWizard,
   parseWizardData,
   getKeys,
+  getKeyById,
   addKey,
   getUserProviders,
   getProviderBySlug,
@@ -46,6 +47,7 @@ import {
   backKeyboard,
   promptsKeyboard,
   promptDetailKeyboard,
+  newChatPickerKeyboard,
 } from 'lib/keyboards';
 import { ROUTING_POLICIES } from 'lib/providers';
 
@@ -332,7 +334,7 @@ export default async function (message) {
     return;
   }
 
-  // ─── /new or /chat — Start continuous chat session ────────────────────────
+  // ─── /new or /chat — Pick Combo or Key to start new chat ──────────────────
   if (
     text === '/new' ||
     text === '/chat' ||
@@ -341,29 +343,31 @@ export default async function (message) {
     text === '💬 چت با هوش مصنوعی'
   ) {
     await clearWizard(from.id);
-    await clearHistory(user.id);
-    await startChatSession(user.id);
+    const comboList = await getCombos(user.id);
+    const allKeys = await getKeys(user.id);
+    const providers = await getUserProviders(user.id);
     const comboRaw = await getActiveCombo(user);
-    const combo = parseCombo(comboRaw);
-    const comboInfo = combo
-      ? `🔀 کمبوی فعال: <b>${escHtml(combo.name)}</b> (${ROUTING_POLICIES[combo.routingPolicy]?.name || combo.routingPolicy})`
-      : '⚠️ <b>هنوز کمبویی انتخاب نشده.</b> از «کمبوهای من» یک کمبو فعال کن.';
+    const activeCombo = parseCombo(comboRaw);
+    const activeKey = user.activeKeyId ? await getKeyById(user.activeKeyId, user.id) : null;
+    const activeKeyProv = activeKey ? providers.find((p) => p.slug === activeKey.providerSlug) : null;
+
+    let currentTargetInfo = 'تعیین‌نشده';
+    if (activeKey) {
+      currentTargetInfo = `🔑 کلید <b>${escHtml(activeKey.label || activeKeyProv?.name || activeKey.providerSlug)}</b> (${escHtml(activeKeyProv?.name || activeKey.providerSlug)})`;
+    } else if (activeCombo) {
+      currentTargetInfo = `🔀 کمبوی <b>${escHtml(activeCombo.name)}</b> (${escHtml(ROUTING_POLICIES[activeCombo.routingPolicy]?.name || activeCombo.routingPolicy)})`;
+    }
 
     await api.sendMessage({
       chat_id: chat.id,
       text:
-        `💬 <b>گفتگوی جدید آغاز شد!</b>\n\n` +
-        `${comboInfo}\n\n` +
-        `<i>💡 پیام یا عکس‌های خود را ارسال فرمایید. تمامی تبادلات پیام تا زمان زدن «🛑 پایان مکالمه» در همین تسک به صورت پیوسته انجام خواهد شد.</i>\n\n` +
-        `<i>📋 برای استفاده از پرامپت‌های ذخیره‌شده، از عبارت <code>پرامپت [عنوان]</code> یا <code>#[عنوان]</code> در کپشن یا پیام استفاده کنید.</i>`,
+        `💬 <b>شروع گفتگوی جدید</b>\n\n` +
+        `لطفاً انتخاب کنید این گفتگو با کدام <b>کمبو</b> یا <b>کلید / ارائه‌دهنده</b> انجام شود:\n\n` +
+        `🎯 انتخاب فعال فعلی: ${currentTargetInfo}\n\n` +
+        `<i>💡 با لمس کمبو یا کلید موردنظر از لیست زیر، گفتگوی پیوسته بلافاصله آغاز خواهد شد:</i>`,
       parse_mode: 'HTML',
-      reply_markup: chatActionsKeyboard(true),
+      reply_markup: newChatPickerKeyboard(comboList, allKeys, providers, user.activeComboId, user.activeKeyId),
     });
-    await api.sendMessage({
-      chat_id: chat.id,
-      text: '👇 نوار وضعیت گفتگو (چت فعال):',
-      reply_markup: mainReplyKeyboard(from.id, true),
-    }).catch(() => {});
     return;
   }
 
@@ -531,20 +535,28 @@ export default async function (message) {
   // ─── Session Gate ─────────────────────────────────────────────────────────
   // In normal mode, do not process stray messages into AI unless an active session is open.
   if (!user.chatSessionActive) {
+    const activeKey = user.activeKeyId ? await getKeyById(user.activeKeyId, user.id) : null;
     const comboRaw = await getActiveCombo(user);
     const combo = parseCombo(comboRaw);
+    let targetLabel = '';
+    if (activeKey) {
+      targetLabel = `🔑 کلید آماده: <b>${escHtml(activeKey.label || activeKey.providerSlug)}</b>\n\n`;
+    } else if (combo) {
+      targetLabel = `🔀 کمبوی آماده: <b>${escHtml(combo.name)}</b>\n\n`;
+    }
+
     await api.sendMessage({
       chat_id: chat.id,
       text:
         `🔒 <b>هیچ گفتگوی فعالی باز نیست.</b>\n\n` +
         `برای اینکه مکالمات و تصاویر ارسالی شما به صورت منظم و پیوسته در قالب یک تسک مشخص تبادل شوند و گفتگوهای مانوس شلوغ نشوند، لطفاً ابتدا یک گفتگوی جدید آغاز کنید:\n\n` +
-        (combo ? `🔀 کمبوی آماده: <b>${escHtml(combo.name)}</b>\n\n` : '') +
-        `<i>👇 با زدن دکمه زیر چت فعال می‌شود و تمامی پیام‌های بعدی تا زمان «🛑 پایان مکالمه» در همین گفتگو پیگیری خواهند شد.</i>`,
+        targetLabel +
+        `<i>👇 با زدن دکمه زیر، انتخاب کمبو/کلید و شروع چت فعال خواهد شد:</i>`,
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '💬 شروع چت جدید', callback_data: 'a:new_chat' }],
-          [{ text: '🔀 انتخاب کمبو', callback_data: 'a:combos' }],
+          [{ text: '💬 شروع چت جدید (انتخاب کمبو / کلید)', callback_data: 'a:new_chat' }],
+          [{ text: '🔀 کمبوهای من', callback_data: 'a:combos' }, { text: '🔑 کلیدها', callback_data: 'a:keys' }],
           [{ text: '📋 پرامپت‌های من', callback_data: 'a:prompts' }],
         ],
       },
@@ -552,18 +564,18 @@ export default async function (message) {
     return;
   }
 
+  const activeKey = user.activeKeyId ? await getKeyById(user.activeKeyId, user.id) : null;
   const comboRaw = await getActiveCombo(user);
   const combo = parseCombo(comboRaw);
 
-  if (!combo || combo.providerSlugs.length === 0) {
+  if (!activeKey && (!combo || combo.providerSlugs.length === 0)) {
     await api.sendMessage({
       chat_id: chat.id,
       text:
-        `⚠️ <b>هنوز کمبویی فعال نیست!</b>\n\n` +
+        `⚠️ <b>هنوز کمبو یا کلیدی انتخاب نشده است!</b>\n\n` +
         `برای چت با هوش مصنوعی:\n` +
-        `۱. از «🔑 مدیریت کلیدها» کلید API اضافه کن\n` +
-        `۲. از «🔀 کمبوهای من» یک کمبو بساز و فعال کن\n` +
-        `۳. پیامت رو بنویس یا عکس بفرست!`,
+        `۱. روی «💬 شروع چت جدید» یا /new بزنید و کمبو یا کلید موردنظر را انتخاب کنید\n` +
+        `۲. یا از «🔑 مدیریت کلیدها» کلید اضافه کنید.`,
       parse_mode: 'HTML',
       reply_markup: mainMenuKeyboard(user, null),
     });

@@ -2,7 +2,7 @@
  * Chat orchestrator: builds messages array from history and calls the router.
  */
 
-import { getHistory, appendHistory, clearHistory, getActiveCombo, parseCombo, getUserProviders, setSessionTaskId } from 'lib/db';
+import { getHistory, appendHistory, clearHistory, getActiveCombo, parseCombo, getUserProviders, setSessionTaskId, getKeyById } from 'lib/db';
 import { routeChat } from 'lib/ai_router';
 
 const SYSTEM_PROMPT =
@@ -56,18 +56,27 @@ export async function sendChat(dbUser, tgId, userText) {
     { role: 'user', content: userContent },
   ];
 
-  // 4. Get active combo (or fail gracefully)
-  const comboRaw = await getActiveCombo(dbUser);
-  const combo = parseCombo(comboRaw);
-
+  // 4. Get active combo or pinned key
   let providerSlugs = ['gemini'];
   let routingPolicy = 'fallback';
   let modelOverrides = {};
+  let pinnedKeyId = null;
 
-  if (combo && combo.providerSlugs.length > 0) {
-    providerSlugs  = combo.providerSlugs;
-    routingPolicy  = combo.routingPolicy || 'fallback';
-    modelOverrides = combo.modelOverrides || {};
+  if (dbUser.activeKeyId) {
+    const keyRow = await getKeyById(dbUser.activeKeyId, dbUser.id);
+    if (keyRow) {
+      providerSlugs = [keyRow.providerSlug];
+      pinnedKeyId = keyRow.id;
+    }
+  } else {
+    const comboRaw = await getActiveCombo(dbUser);
+    const combo = parseCombo(comboRaw);
+
+    if (combo && combo.providerSlugs.length > 0) {
+      providerSlugs  = combo.providerSlugs;
+      routingPolicy  = combo.routingPolicy || 'fallback';
+      modelOverrides = combo.modelOverrides || {};
+    }
   }
 
   // 5. Fetch provider rows for the selected slugs
@@ -85,6 +94,7 @@ export async function sendChat(dbUser, tgId, userText) {
     providerRows,
     maxTokens:      1500,
     existingTaskId: dbUser.currentTaskId || null,
+    pinnedKeyId,
   });
 
   // 7. Save to history (lightweight representation for images to avoid bloating DB)
