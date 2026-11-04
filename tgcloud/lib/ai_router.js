@@ -9,7 +9,13 @@ import { eq, and, asc, notInArray, sql } from 'sdk/db';
 import { userKeys } from 'schema';
 import { decryptKey } from 'lib/crypto';
 import { markKeyResult, recordUsage } from 'lib/db';
-import { sleep } from 'lib/sleep';
+import { withTimeout } from 'lib/sleep';
+
+// Every provider fetch hop is bounded: there is NO AbortController in the
+// isolate, so withTimeout abandons the call instead of canceling it — and a
+// hung fetch used to stall the whole handler forever (stuck ⏳ placeholder).
+// Budgets measured live: CPU ≈ 3.0s/invoke, wall cap ∈ (25s, 30s].
+const PROVIDER_HOP_MS = 11000;
 
 // ─── Key Selection ────────────────────────────────────────────────────────────
 
@@ -318,7 +324,7 @@ async function callManus(apiKey, model, messages, maxTokens) {
   const mediaList = [];
   let agentStatus = 'running';
   let statusDetail = {};
-  const deadline = Date.now() + 25000; // Poll for up to 25 seconds within webhook budget
+  const deadline = Date.now() + 16000; // Keep well within the measured wall cap: total handler ≈ 17s
 
   while (Date.now() < deadline) {
     try {
@@ -410,10 +416,10 @@ async function callManus(apiKey, model, messages, maxTokens) {
       console.warn('[9Router] Manus check error:', pollErr);
     }
 
-    // Pace the polling: consecutive fired rounds used to hit Manus hundreds of
-    // times per chat (fast-fail rounds had no delay). ~2s cadence ≈ ≤12 polls
-    // over the 25s budget.
-    await sleep(2000);
+    // No artificial pause here anymore: each round already contains two
+    // network round-trips to api.manus.ai (natural ≈0.3-1s pacing at ~zero
+    // isolate CPU). The old busy-spin sleep burned CPU against the ~3.0s
+    // per-invoke budget and got handlers killed mid-flight.
   }
 
   // 5. Build final text with markdown image embeds
@@ -506,12 +512,12 @@ export async function routeChat({
         try {
           let result;
           if (slug === 'gemini') {
-            result = await callGemini(plainKey, model, messages, maxTokens);
+            result = await withTimeout(callGemini(plainKey, model, messages, maxTokens), PROVIDER_HOP_MS);
           } else if (slug === 'manus') {
-            result = await callManus(plainKey, model, messages, maxTokens);
+            result = await withTimeout(callManus(plainKey, model, messages, maxTokens), PROVIDER_HOP_MS);
           } else {
             const baseUrl = provRow?.baseUrl || 'https://api.openai.com/v1';
-            result = await callOpenAICompat(baseUrl, plainKey, model, messages, maxTokens);
+            result = await withTimeout(callOpenAICompat(baseUrl, plainKey, model, messages, maxTokens), PROVIDER_HOP_MS);
           }
 
           if (result && result.text) {

@@ -31,6 +31,7 @@ import {
 } from 'lib/db';
 import { sendChat } from 'lib/chat';
 import { fingerprint } from 'lib/crypto';
+import { withTimeout } from 'lib/sleep';
 import { ROUTING_POLICIES } from 'lib/providers';
 
 // ─── Auth Resolution ──────────────────────────────────────────────────────────
@@ -160,7 +161,9 @@ export default async function (input, ctx) {
     const claimId = claimRows && claimRows[0] ? claimRows[0].id : null;
 
     try {
-      const result = await sendChat(user, userId, message);
+      // Platform wall cap ∈ (25s, 30s] — 21s total here, leaving room for the
+      // claim bookkeeping below so the frontend always gets JSON, never a 500.
+      const result = await withTimeout(sendChat(user, userId, message), 21000);
       return {
         ok: true,
         text: result.text,
@@ -168,6 +171,12 @@ export default async function (input, ctx) {
         model: result.model,
       };
     } catch (err) {
+      if (err && err.isTimeout) {
+        return {
+          ok: false,
+          error: '🕐 پاسخ ارائهدهنده بیش از ۲۱ ثانیه طول کشید و قطع شد. لطفاً دوباره تلاش کنید یا ارائهدهنده دیگری انتخاب کنید.',
+        };
+      }
       return { ok: false, error: err.message };
     } finally {
       if (claimId != null) {

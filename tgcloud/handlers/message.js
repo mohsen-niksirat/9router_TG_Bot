@@ -23,7 +23,7 @@ import {
 } from 'lib/db';
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
-import { sleep } from 'lib/sleep';
+import { sleep, withTimeout } from 'lib/sleep';
 import {
   escHtml,
   sanitizeTelegramHtml,
@@ -40,9 +40,9 @@ import {
 import { ROUTING_POLICIES } from 'lib/providers';
 
 // Photos are re-encoded to a base64 data URL (+37%) inside the chat payload.
-// Cap at 9MB so the request body stays under every provider's upload limit
-// (OpenAI/Gemini ~20MB raw → ~27MB base64 = HTTP 400 before the model ever sees it).
-const MAX_IMAGE_BYTES = 9 * 1024 * 1024;
+// 6MB keeps BOTH sides healthy: provider payload limits (OpenAI/Gemini ~20MB
+// raw) and the isolate's ~3.0s CPU budget (the encode loop is pure JS).
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 
 export default async function (message) {
   if (!message || !message.chat) return;
@@ -474,7 +474,7 @@ export default async function (message) {
         await api.sendMessage({
           chat_id: chat.id,
           text: droppedBig
-            ? `⚠️ عکسهای این آلبوم بزرگتر از سقف ۹MB هستند و برای مدل ارسال نشدند؛ لطفاً عکس کوچکتری بفرستید.`
+            ? `⚠️ عکسهای این آلبوم بزرگتر از سقف ۶MB هستند و برای مدل ارسال نشدند؛ لطفاً عکس کوچکتری بفرستید.`
             : '⚠️ دریافت عکسهای این آلبوم ممکن نشد؛ لطفاً دوباره تلاش کنید.',
         });
         return;
@@ -489,7 +489,7 @@ export default async function (message) {
           const mb = (bytes.length / 1048576).toFixed(1);
           await api.sendMessage({
             chat_id: chat.id,
-            text: `⚠️ عکس ارسالی ${mb}MB است و بزرگتر از سقف مجاز ۹MB میباشد؛ لطفاً عکس کوچکتری بفرستید.`,
+            text: `⚠️ عکس ارسالی ${mb}MB است و بزرگتر از سقف مجاز ۶MB میباشد؛ لطفاً عکس کوچکتری بفرستید.`,
           });
           return;
         }
@@ -512,8 +512,30 @@ export default async function (message) {
     parse_mode: 'HTML',
   });
 
+  // Watchdog: tick the placeholder while a slow reply is pending so it can
+  // never look frozen. Net-paced sleeps — a Date.now() spin used to burn the
+  // isolate's ~3.0s CPU budget and get the invocation killed silently, which
+  // is exactly how the placeholder used to get stuck on forever.
+  let finished = false;
+  const watchdog = (async () => {
+    const t0 = Date.now();
+    while (!finished && Date.now() - t0 < 16000) {
+      await sleep(7000);
+      if (finished) return;
+      const seconds = Math.floor((Date.now() - t0) / 1000);
+      await api.editMessageText({
+        chat_id: chat.id,
+        message_id: thinkMsg.message_id,
+        text: `⏳ <b>در حال پردازش...</b>\n⏱ <code>${seconds} ثانیه</code>`,
+        parse_mode: 'HTML',
+      }).catch(() => {});
+    }
+  })();
+
   try {
-    const result = await sendChat(user, from.id, promptWithImages);
+    // Wall-cap of the platform is ∈ (25s, 30s] — 17s for the whole chat call
+    // leaves room for the photo download above and the cleanup below.
+    const result = await withTimeout(sendChat(user, from.id, promptWithImages), 17000);
     const footer = `\n\n<i>—— ${result.provider} / ${result.model}</i>`;
 
     // 1. Collect all AI-generated or returned image URLs
@@ -592,14 +614,21 @@ export default async function (message) {
       reply_markup: chatActionsKeyboard(),
     });
   } catch (err) {
+    const timedOut = !!(err && err.isTimeout);
     await api.editMessageText({
       chat_id: chat.id,
       message_id: thinkMsg.message_id,
-      text:
-        `❌ <b>خطا در پردازش پیام:</b>\n<code>${escHtml(err.message)}</code>\n\n` +
-        `💡 مطمئن شو کلید API فعال در کمبو داری.`,
+      text: timedOut
+        ? '🕐 <b>زمان پاسخ تمام شد</b>\n' +
+          'ارائهدهنده بیش از ۱۷ ثانیه پاسخ نداد و اتصال قطع شد — معمولاً به معنی ازدحام یا محدودیت موقت ارائهدهنده است.\n\n' +
+          'یکبار دوباره پیام بفرست، یا از منوی «🔀 کمبوها» ارائهدهنده/کلید دیگری انتخاب کن.'
+        : `❌ <b>خطا در پردازش پیام:</b>\n<code>${escHtml(err.message)}</code>\n\n` +
+          `💡 مطمئن شو کلید API فعال در کمبو داری.`,
       parse_mode: 'HTML',
       reply_markup: chatActionsKeyboard(),
-    });
+    }).catch(() => {});
+  } finally {
+    finished = true;
+    await watchdog; // let the ticker observe `finished` and exit on its own
   }
 }
