@@ -9,13 +9,36 @@ import { eq, and, asc, notInArray, sql } from 'sdk/db';
 import { userKeys } from 'schema';
 import { decryptKey } from 'lib/crypto';
 import { markKeyResult, recordUsage, getKeyById } from 'lib/db';
-import { withTimeout } from 'lib/sleep';
+import { sleep, withTimeout } from 'lib/sleep';
 
 // Every provider fetch hop is bounded: there is NO AbortController in the
 // isolate, so withTimeout abandons the call instead of canceling it — and a
 // hung fetch used to stall the whole handler forever (stuck ⏳ placeholder).
 // Budgets measured live: CPU ≈ 3.0s/invoke, wall cap ∈ (25s, 30s].
 const PROVIDER_HOP_MS = 23500;
+
+/**
+ * Resilient fetch with automatic retries for transient edge-network/TLS drops.
+ */
+async function fetchWithRetry(url, options, maxAttempts = 3, delayMs = 600) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.ok || (res.status >= 400 && res.status < 500)) {
+        return res;
+      }
+      console.warn(`[9Router] fetch ${url} returned HTTP ${res.status}, retrying (${attempt}/${maxAttempts})...`);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[9Router] fetch ${url} network drop (${attempt}/${maxAttempts}):`, err.message || err);
+    }
+    if (attempt < maxAttempts) {
+      await sleep(delayMs);
+    }
+  }
+  throw lastErr || new Error(`fetch: request failed after ${maxAttempts} attempts`);
+}
 
 // ─── Key Selection ────────────────────────────────────────────────────────────
 
@@ -332,63 +355,75 @@ export async function readManusTask(apiKey, taskId, prev) {
   let agentStatus = (prev && prev.agentStatus) || 'running';
   let statusDetail = (prev && prev.statusDetail) || {};
 
-  const listRes = await fetch(
-    `https://api.manus.ai/v2/task.listMessages?task_id=${taskId}&order=desc&limit=30`,
-    { headers: { 'x-manus-api-key': apiKey } },
-  );
-  if (listRes.ok) {
-    const listData = await listRes.json();
-    const items = Array.isArray(listData)
-      ? listData
-      : (listData.messages || listData.data || listData.items || []);
+  try {
+    const listRes = await fetchWithRetry(
+      `https://api.manus.ai/v2/task.listMessages?task_id=${taskId}&order=desc&limit=30`,
+      { headers: { 'x-manus-api-key': apiKey } },
+      2,
+      400
+    );
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const items = Array.isArray(listData)
+        ? listData
+        : (listData.messages || listData.data || listData.items || []);
 
-    const assistantTexts = [];
-    for (const item of items) {
-      if (!item) continue;
-      // STRICT FILTER: never extract text/media from user input messages
-      if (item.type === 'user_message' || item.role === 'user' || item.user_message) {
-        continue;
-      }
-      if (item.agent_status) agentStatus = item.agent_status;
-      if (item.status_update?.agent_status) {
-        agentStatus = item.status_update.agent_status;
-        if (item.status_update.status_detail) statusDetail = item.status_update.status_detail;
-      }
-      const am = item.assistant_message || (item.type === 'assistant_message' ? item : null);
-      if (am) {
-        if (typeof am.content === 'string' && am.content.trim()) {
-          assistantTexts.push(am.content.trim());
-        } else if (Array.isArray(am.content)) {
-          for (const part of am.content) {
-            if (part.type === 'text' && part.text && part.text.trim()) {
-              assistantTexts.push(part.text.trim());
+      const assistantTexts = [];
+      for (const item of items) {
+        if (!item) continue;
+        // STRICT FILTER: never extract text/media from user input messages
+        if (item.type === 'user_message' || item.role === 'user' || item.user_message) {
+          continue;
+        }
+        if (item.agent_status) agentStatus = item.agent_status;
+        if (item.status_update?.agent_status) {
+          agentStatus = item.status_update.agent_status;
+          if (item.status_update.status_detail) statusDetail = item.status_update.status_detail;
+        }
+        const am = item.assistant_message || (item.type === 'assistant_message' ? item : null);
+        if (am) {
+          if (typeof am.content === 'string' && am.content.trim()) {
+            assistantTexts.push(am.content.trim());
+          } else if (Array.isArray(am.content)) {
+            for (const part of am.content) {
+              if (part.type === 'text' && part.text && part.text.trim()) {
+                assistantTexts.push(part.text.trim());
+              }
             }
           }
         }
+        extractManusMediaUrls(item, mediaList);
       }
-      extractManusMediaUrls(item, mediaList);
+      if (assistantTexts.length > 0) {
+        const uniqueTexts = [];
+        for (const t of assistantTexts) if (!uniqueTexts.includes(t)) uniqueTexts.push(t);
+        // reverse: listMessages is order=desc (newest first)
+        assistantText = uniqueTexts.reverse().join('\n\n');
+      }
     }
-    if (assistantTexts.length > 0) {
-      const uniqueTexts = [];
-      for (const t of assistantTexts) if (!uniqueTexts.includes(t)) uniqueTexts.push(t);
-      // reverse: listMessages is order=desc (newest first)
-      assistantText = uniqueTexts.reverse().join('\n\n');
-    }
+  } catch (err) {
+    console.warn('[9Router] listMessages fetch failed:', err.message || err);
   }
 
-  const detailRes = await fetch(
-    `https://api.manus.ai/v2/task.detail?task_id=${taskId}`,
-    { headers: { 'x-manus-api-key': apiKey } },
-  );
-  if (detailRes.ok) {
-    const detailData = await detailRes.json();
-    const taskInfo = detailData.data || detailData.task || detailData;
-    if (taskInfo.agent_status || taskInfo.status) {
-      agentStatus = taskInfo.agent_status || taskInfo.status;
+  try {
+    const detailRes = await fetchWithRetry(
+      `https://api.manus.ai/v2/task.detail?task_id=${taskId}`,
+      { headers: { 'x-manus-api-key': apiKey } },
+      2,
+      400
+    );
+    if (detailRes.ok) {
+      const detailData = await detailRes.json();
+      const taskInfo = detailData.data || detailData.task || detailData;
+      if (taskInfo.agent_status || taskInfo.status) {
+        agentStatus = taskInfo.agent_status || taskInfo.status;
+      }
+      if (taskInfo.status_detail) statusDetail = taskInfo.status_detail;
+      if (taskInfo.summary && !assistantText) assistantText = taskInfo.summary;
+      extractManusMediaUrls(taskInfo, mediaList);
     }
-    if (taskInfo.status_detail) statusDetail = taskInfo.status_detail;
-    if (taskInfo.summary && !assistantText) assistantText = taskInfo.summary;
-    extractManusMediaUrls(taskInfo, mediaList);
+  } catch (err) {
+    console.warn('[9Router] task.detail fetch failed:', err.message || err);
   }
 
   return {
@@ -468,14 +503,14 @@ async function callManus(apiKey, model, messages, maxTokens, existingTaskId = nu
       message: { content: contentParts },
     };
     try {
-      const sendRes = await fetch('https://api.manus.ai/v2/task.sendMessage', {
+      const sendRes = await fetchWithRetry('https://api.manus.ai/v2/task.sendMessage', {
         method: 'POST',
         headers: {
           'x-manus-api-key': apiKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(sendPayload),
-      });
+      }, 2, 500);
 
       if (!sendRes.ok) {
         console.warn(`[9Router] task.sendMessage failed on task ${taskId}, falling back to task.create`);
@@ -495,14 +530,21 @@ async function callManus(apiKey, model, messages, maxTokens, existingTaskId = nu
       interactive_mode: false,
     };
 
-    const createRes = await fetch('https://api.manus.ai/v2/task.create', {
-      method: 'POST',
-      headers: {
-        'x-manus-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(createPayload),
-    });
+    let createRes = null;
+    try {
+      createRes = await fetchWithRetry('https://api.manus.ai/v2/task.create', {
+        method: 'POST',
+        headers: {
+          'x-manus-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(createPayload),
+      }, 3, 700);
+    } catch (netErr) {
+      const err = new Error(`اتصال به مانوس با خطا مواجه شد: ${netErr.message || 'fetch failed'}`);
+      err.status = 503;
+      throw err;
+    }
 
     if (!createRes.ok) {
       const errText = await createRes.text();

@@ -300,11 +300,25 @@ export async function markKeyResult(keyId, success, statusCode = 200) {
 
   if (statusCode >= 500) {
     // Upstream flaked (5xx / network failure — routeChat passes 500 when the
-    // error has no status). Sit the key out briefly so the *next* request also
-    // rotates past it instead of hitting the same broken endpoint first.
+    // error has no status). Sit the key out briefly ONLY if there are other
+    // active keys for this provider; never lock out the user's only key.
+    const key = await db.select().from(userKeys).where(eq(userKeys.id, keyId)).get();
+    let hasOtherActive = false;
+    if (key) {
+      const other = await db.select().from(userKeys)
+        .where(and(
+          eq(userKeys.userId, key.userId),
+          eq(userKeys.providerSlug, key.providerSlug),
+          sql`id != ${keyId}`,
+          eq(userKeys.status, 'active')
+        ))
+        .get();
+      hasOtherActive = Boolean(other);
+    }
+
     await db.update(userKeys).set({
-      status:        'cooldown',
-      cooldownUntil: now + 30,
+      status:        hasOtherActive ? 'cooldown' : 'active',
+      cooldownUntil: hasOtherActive ? now + 30 : now + 5,
       lastUsedAt:    now,
       failureCount:  sql`failure_count + 1`,
     }).where(eq(userKeys.id, keyId)).run();
