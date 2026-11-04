@@ -230,6 +230,90 @@ function extractManusMediaUrls(obj, list, depth = 0) {
   }
 }
 
+const MANUS_TERMINAL_STATES = ['completed', 'stopped', 'waiting', 'failed', 'error'];
+
+/**
+ * ONE read of a Manus task: task.listMessages + task.detail merged into a
+ * snapshot. Shared by callManus (in-window poll) and lib/manus_pending
+ * (deferred delivery retried on the user's later updates — the platform
+ * cannot wait long enough in a single invocation).
+ *
+ * @returns {{assistantText, mediaList, agentStatus, statusDetail, done}}
+ */
+export async function readManusTask(apiKey, taskId, prev) {
+  let assistantText = (prev && prev.assistantText) || '';
+  const mediaList = (prev && prev.mediaList) || [];
+  let agentStatus = (prev && prev.agentStatus) || 'running';
+  let statusDetail = (prev && prev.statusDetail) || {};
+
+  const listRes = await fetch(
+    `https://api.manus.ai/v2/task.listMessages?task_id=${taskId}&order=desc&limit=30`,
+    { headers: { 'x-manus-api-key': apiKey } },
+  );
+  if (listRes.ok) {
+    const listData = await listRes.json();
+    const items = Array.isArray(listData)
+      ? listData
+      : (listData.messages || listData.data || listData.items || []);
+
+    const assistantTexts = [];
+    for (const item of items) {
+      if (!item) continue;
+      // STRICT FILTER: never extract text/media from user input messages
+      if (item.type === 'user_message' || item.role === 'user' || item.user_message) {
+        continue;
+      }
+      if (item.agent_status) agentStatus = item.agent_status;
+      if (item.status_update?.agent_status) {
+        agentStatus = item.status_update.agent_status;
+        if (item.status_update.status_detail) statusDetail = item.status_update.status_detail;
+      }
+      const am = item.assistant_message || (item.type === 'assistant_message' ? item : null);
+      if (am) {
+        if (typeof am.content === 'string' && am.content.trim()) {
+          assistantTexts.push(am.content.trim());
+        } else if (Array.isArray(am.content)) {
+          for (const part of am.content) {
+            if (part.type === 'text' && part.text && part.text.trim()) {
+              assistantTexts.push(part.text.trim());
+            }
+          }
+        }
+      }
+      extractManusMediaUrls(item, mediaList);
+    }
+    if (assistantTexts.length > 0) {
+      const uniqueTexts = [];
+      for (const t of assistantTexts) if (!uniqueTexts.includes(t)) uniqueTexts.push(t);
+      // reverse: listMessages is order=desc (newest first)
+      assistantText = uniqueTexts.reverse().join('\n\n');
+    }
+  }
+
+  const detailRes = await fetch(
+    `https://api.manus.ai/v2/task.detail?task_id=${taskId}`,
+    { headers: { 'x-manus-api-key': apiKey } },
+  );
+  if (detailRes.ok) {
+    const detailData = await detailRes.json();
+    const taskInfo = detailData.data || detailData.task || detailData;
+    if (taskInfo.agent_status || taskInfo.status) {
+      agentStatus = taskInfo.agent_status || taskInfo.status;
+    }
+    if (taskInfo.status_detail) statusDetail = taskInfo.status_detail;
+    if (taskInfo.summary && !assistantText) assistantText = taskInfo.summary;
+    extractManusMediaUrls(taskInfo, mediaList);
+  }
+
+  return {
+    assistantText,
+    mediaList,
+    agentStatus,
+    statusDetail,
+    done: MANUS_TERMINAL_STATES.includes(agentStatus),
+  };
+}
+
 /**
  * Manus AI via official API v2 async task system.
  * Docs: https://open.manus.ai/docs/v2/introduction
@@ -321,108 +405,32 @@ async function callManus(apiKey, model, messages, maxTokens) {
 
   // 4. Poll task execution & retrieve assistant output
   let assistantText = '';
-  const mediaList = [];
+  let mediaList = [];
   let agentStatus = 'running';
   let statusDetail = {};
-  // Poll deadline: create(~1-3s) + this must stay under PROVIDER_HOP_MS so
-  // callManus always reaches its graceful "task continues + link" fallback
-  // instead of being raced by the hop timeout (that was the 17s timeout bug).
+  // Poll window stays under PROVIDER_HOP_MS/global 17s so this loop always
+  // reaches the graceful fallback below (that alignment fixed the 17s bug).
   const deadline = Date.now() + 10000;
+  let stillInFlight = false;
 
   while (Date.now() < deadline) {
     try {
-      const listRes = await fetch(
-        `https://api.manus.ai/v2/task.listMessages?task_id=${taskId}&order=desc&limit=30`,
-        {
-          headers: { 'x-manus-api-key': apiKey },
-        }
-      );
-
-      if (listRes.ok) {
-        const listData = await listRes.json();
-        const items = Array.isArray(listData)
-          ? listData
-          : (listData.messages || listData.data || listData.items || []);
-
-        const assistantTexts = [];
-
-        for (const item of items) {
-          if (!item) continue;
-
-          // STRICT FILTER: NEVER extract text or media from user input messages!
-          if (item.type === 'user_message' || item.role === 'user' || item.user_message) {
-            continue;
-          }
-
-          if (item.agent_status) agentStatus = item.agent_status;
-          if (item.status_update?.agent_status) {
-            agentStatus = item.status_update.agent_status;
-            if (item.status_update.status_detail) statusDetail = item.status_update.status_detail;
-          }
-
-          const am = item.assistant_message || (item.type === 'assistant_message' ? item : null);
-          if (am) {
-            if (typeof am.content === 'string' && am.content.trim()) {
-              assistantTexts.push(am.content.trim());
-            } else if (Array.isArray(am.content)) {
-              for (const part of am.content) {
-                if (part.type === 'text' && part.text && part.text.trim()) {
-                  assistantTexts.push(part.text.trim());
-                }
-              }
-            }
-          }
-
-          // Extract media ONLY from assistant/tool execution items
-          extractManusMediaUrls(item, mediaList);
-        }
-
-        if (assistantTexts.length > 0) {
-          const uniqueTexts = [];
-          for (const t of assistantTexts) {
-            if (!uniqueTexts.includes(t)) uniqueTexts.push(t);
-          }
-          // Reverse because listMessages is order=desc (newest first)
-          assistantText = uniqueTexts.reverse().join('\n\n');
-        }
-
-        if (['completed', 'stopped', 'waiting', 'failed', 'error'].includes(agentStatus)) {
-          break;
-        }
+      const snap = await readManusTask(apiKey, taskId, { assistantText, mediaList, agentStatus, statusDetail });
+      assistantText = snap.assistantText;
+      mediaList = snap.mediaList;
+      agentStatus = snap.agentStatus;
+      statusDetail = snap.statusDetail;
+      if (snap.done) {
+        stillInFlight = false;
+        break;
       }
-
-      // Check task detail for additional status & artifact outputs
-      const detailRes = await fetch(
-        `https://api.manus.ai/v2/task.detail?task_id=${taskId}`,
-        {
-          headers: { 'x-manus-api-key': apiKey },
-        }
-      );
-
-      if (detailRes.ok) {
-        const detailData = await detailRes.json();
-        const taskInfo = detailData.data || detailData.task || detailData;
-        if (taskInfo.agent_status || taskInfo.status) {
-          agentStatus = taskInfo.agent_status || taskInfo.status;
-        }
-        if (taskInfo.status_detail) statusDetail = taskInfo.status_detail;
-        if (taskInfo.summary && !assistantText) {
-          assistantText = taskInfo.summary;
-        }
-        extractManusMediaUrls(taskInfo, mediaList);
-
-        if (['completed', 'stopped', 'waiting', 'failed', 'error'].includes(agentStatus)) {
-          break;
-        }
-      }
+      stillInFlight = true;
     } catch (pollErr) {
       console.warn('[9Router] Manus check error:', pollErr);
+      stillInFlight = true; // network trouble — the task itself keeps running
     }
-
-    // No artificial pause here anymore: each round already contains two
-    // network round-trips to api.manus.ai (natural ≈0.3-1s pacing at ~zero
-    // isolate CPU). The old busy-spin sleep burned CPU against the ~3.0s
-    // per-invoke budget and got handlers killed mid-flight.
+    // Rounds are naturally paced by two api.manus.ai round-trips each (no
+    // busy-spin: HTML-date-free CPU budget of the isolate is ~3.0s/invoke).
   }
 
   // 5. Build final text with markdown image embeds
@@ -457,6 +465,9 @@ async function callManus(apiKey, model, messages, maxTokens) {
     promptTokens: 120,
     completionTokens: 250,
     totalTokens: 370,
+    // Task outran the sync window -> the message handler queues deferred
+    // delivery; results arrive in-chat on the user's next update.
+    ...(stillInFlight ? { deferredTaskId: taskId } : {}),
   };
 }
 

@@ -126,3 +126,18 @@ export const config = table('config', {
   key:   text('key').primaryKey(),
   value: text('value'),
 }, () => ({}));
+
+// ─── Deferred Task Delivery Queue ────────────────────────────────────────────
+// Manus tasks whose completion outran one invocation's wall/CPU budget. Each
+// entry is retried on the user's subsequent updates (the platform is purely
+// event-driven — no cron exists) and deleted once the full result is delivered
+// into chat_id.
+export const pendingTasks = table('pending_tasks', {
+  id:        integer('id').primaryKey({ autoIncrement: true }),
+  userId:    integer('user_id').notNull(),
+  chatId:    integer('chat_id').notNull(),
+  taskId:    text('task_id').notNull(),
+  createdAt: integer('created_at').default(sql`(unixepoch())`),
+}, (t) => ({
+  pendIdx: index('idx_pending_user').on(t.userId, t.createdAt),
+}));

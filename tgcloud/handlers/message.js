@@ -24,6 +24,7 @@ import {
 import { sendChat, clearHistory } from 'lib/chat';
 import { uint8ToBase64 } from 'lib/crypto';
 import { sleep, withTimeout } from 'lib/sleep';
+import { enqueuePendingTask, deliverPendingTasks } from 'lib/manus_pending';
 import {
   escHtml,
   sanitizeTelegramHtml,
@@ -62,6 +63,11 @@ export default async function (message) {
       web_app: { url: buildMiniAppUrl(from.id) },
     },
   }).catch(() => {});
+
+  // Deliver ANY completed deferred Manus task first — queued when a task
+  // outran one invocation's budget; results land in this chat automatically
+  // on the user's next update, no website visit needed.
+  await deliverPendingTasks(user, chat);
 
   // ─── Wizard FSM (intercept before commands) ────────────────────────────────
   const wState = user.wizardState || 'idle';
@@ -536,6 +542,13 @@ export default async function (message) {
     // Wall-cap of the platform is ∈ (25s, 30s] — 17s for the whole chat call
     // leaves room for the photo download above and the cleanup below.
     const result = await withTimeout(sendChat(user, from.id, promptWithImages), 17000);
+
+    // If the Manus task outran the sync window, queue deferred delivery: the
+    // full result (final images + text) will be pushed into this chat as soon
+    // as the task finishes, checked on every future update.
+    if (result && result.deferredTaskId) {
+      await enqueuePendingTask(user.id, chat.id, result.deferredTaskId);
+    }
     const footer = `\n\n<i>—— ${result.provider} / ${result.model}</i>`;
 
     // 1. Collect all AI-generated or returned image URLs
