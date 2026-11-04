@@ -42,6 +42,79 @@ export function sanitizeTelegramHtml(str) {
   return s;
 }
 
+/**
+ * Universal extractor for AI-generated images (Manus, Gemini, OpenAI, etc.).
+ * Extracts all valid image URLs (including signed S3 query params) and strips
+ * ugly download links or raw URLs from the descriptive text.
+ */
+export function extractMediaAndCleanText(rawText) {
+  if (!rawText) return { images: [], cleanText: '' };
+
+  const images = [];
+  const foundUrls = new Set();
+
+  // 1. Matches markdown links and images: [title](url) or ![title](url)
+  const mdLinkRegex = /!?\[([^\]]*)\]\((https?:\/\/[^\s\)]+)\)/g;
+  for (const m of rawText.matchAll(mdLinkRegex)) {
+    const label = (m[1] || '').toLowerCase();
+    const url = m[2];
+    const u = url.toLowerCase();
+
+    const isImage =
+      u.includes('manuscdn.com') ||
+      u.includes('files.manus') ||
+      /\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(u) ||
+      /\.(png|jpe?g|webp|gif|bmp)$/i.test(label) ||
+      label.includes('تصویر') ||
+      label.includes('عکس') ||
+      label.includes('image') ||
+      label.includes('photo');
+
+    if (isImage && !foundUrls.has(url)) {
+      foundUrls.add(url);
+      images.push(url);
+    }
+  }
+
+  // 2. Matches bare URLs in text (including query params e.g. ?X-Amz-...)
+  const bareUrlRegex = /https?:\/\/[^\s\)\"\'<>]+/gi;
+  for (const m of rawText.matchAll(bareUrlRegex)) {
+    const url = m[0];
+    const u = url.toLowerCase();
+    const isImage =
+      u.includes('manuscdn.com') ||
+      /\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(u);
+
+    if (isImage && !foundUrls.has(url)) {
+      foundUrls.add(url);
+      images.push(url);
+    }
+  }
+
+  // 3. Clean the text: remove the markdown image/download links and unsightly URLs
+  let cleanText = rawText;
+
+  // Remove markdown links that point to images
+  cleanText = cleanText.replace(/!?\[([^\]]*)\]\((https?:\/\/[^\s\)]+)\)/g, (fullMatch, label, url) => {
+    if (foundUrls.has(url)) return '';
+    return fullMatch;
+  });
+
+  // Remove standalone bare image URLs
+  for (const imgUrl of images) {
+    cleanText = cleanText.split(imgUrl).join('');
+  }
+
+  // Clean common phrases left behind like "دانلود تصویر:", "تصویر نهایی:", bracketed placeholders
+  cleanText = cleanText
+    .replace(/(?:دانلود\s+(?:تصویر|عکس|فایل)[^\n:]*[:：]?)/gi, '')
+    .replace(/\[(?:تصویر|عکس)[^\]]*\]/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return { images, cleanText };
+}
+
 // ─── Main Menu ────────────────────────────────────────────────────────────────
 export function mainMenuKeyboard(user, combo, key = null) {
   let comboLabel = combo ? `🔀 ${combo.name}` : '🔀 بدون کمبو';
