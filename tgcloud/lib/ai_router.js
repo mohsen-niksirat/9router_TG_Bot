@@ -63,7 +63,7 @@ export async function getNextKey(userId, providerSlug, policy = 'fallback', excl
       .get();
   }
 
-  // If no active key, check cooldown expiry
+  // If no active key, check cooldown keys:
   if (!keyRow) {
     const recovered = await db.select().from(userKeys)
       .where(and(...common, eq(userKeys.status, 'cooldown'), sql`cooldown_until <= ${now}`))
@@ -76,6 +76,21 @@ export async function getNextKey(userId, providerSlug, policy = 'fallback', excl
         .where(eq(userKeys.id, recovered.id))
         .run();
       keyRow = recovered;
+    } else {
+      // Last-resort fallback: If no active keys exist at all in this pool,
+      // resurrect the cooling key closest to expiry rather than failing immediately.
+      const cooling = await db.select().from(userKeys)
+        .where(and(...common, eq(userKeys.status, 'cooldown')))
+        .orderBy(asc(userKeys.cooldownUntil), asc(userKeys.id))
+        .get();
+
+      if (cooling) {
+        await db.update(userKeys)
+          .set({ status: 'active', failureCount: 0 })
+          .where(eq(userKeys.id, cooling.id))
+          .run();
+        keyRow = cooling;
+      }
     }
   }
 
@@ -390,6 +405,7 @@ export async function readManusTask(apiKey, taskId, prev) {
  * Docs: https://open.manus.ai/docs/v2/introduction
  */
 async function callManus(apiKey, model, messages, maxTokens, existingTaskId = null, onStream = null) {
+  const callStartTime = Date.now();
   // 1. Resolve agent profile (standard | lite | max)
   let profile = 'standard';
   const m = (model || '').toLowerCase();
@@ -509,9 +525,10 @@ async function callManus(apiKey, model, messages, maxTokens, existingTaskId = nu
   let mediaList = [];
   let agentStatus = 'running';
   let statusDetail = {};
-  // Poll window stays under PROVIDER_HOP_MS/global 17s so this loop always
-  // reaches the graceful fallback below (that alignment fixed the 17s bug).
-  const deadline = Date.now() + 18000;
+  // The serverless invocation has a strict execution window. We cap callManus at
+  // 13 seconds total so it ALWAYS gracefully returns the pending task before any
+  // outer timeout (22s) can kill it.
+  const deadline = callStartTime + 13000;
   let stillInFlight = false;
 
   while (Date.now() < deadline) {
