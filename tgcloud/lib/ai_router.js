@@ -15,7 +15,7 @@ import { withTimeout } from 'lib/sleep';
 // isolate, so withTimeout abandons the call instead of canceling it — and a
 // hung fetch used to stall the whole handler forever (stuck ⏳ placeholder).
 // Budgets measured live: CPU ≈ 3.0s/invoke, wall cap ∈ (25s, 30s].
-const PROVIDER_HOP_MS = 11000;
+const PROVIDER_HOP_MS = 14000; // ladder: global(17s) >= hop(14s) >= create+poll(3s+10s)
 
 // ─── Key Selection ────────────────────────────────────────────────────────────
 
@@ -324,7 +324,10 @@ async function callManus(apiKey, model, messages, maxTokens) {
   const mediaList = [];
   let agentStatus = 'running';
   let statusDetail = {};
-  const deadline = Date.now() + 16000; // Keep well within the measured wall cap: total handler ≈ 17s
+  // Poll deadline: create(~1-3s) + this must stay under PROVIDER_HOP_MS so
+  // callManus always reaches its graceful "task continues + link" fallback
+  // instead of being raced by the hop timeout (that was the 17s timeout bug).
+  const deadline = Date.now() + 10000;
 
   while (Date.now() < deadline) {
     try {

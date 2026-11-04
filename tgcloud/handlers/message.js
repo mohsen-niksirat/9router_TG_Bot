@@ -458,7 +458,7 @@ export default async function (message) {
       for (const it of items) {
         if (it.caption && !albumCaption) albumCaption = it.caption;
         try {
-          const bytes = await api.getFileContent(it.fileId);
+          const bytes = await withTimeout(api.getFileContent(it.fileId), 5000);
           if (bytes && bytes.length > MAX_IMAGE_BYTES) {
             droppedBig++;
             console.warn(`[9Router] Album image too large (${bytes.length} B), skipped`);
@@ -484,7 +484,7 @@ export default async function (message) {
     } else {
       // Single photo
       try {
-        const bytes = await api.getFileContent(fileId);
+        const bytes = await withTimeout(api.getFileContent(fileId), 5000);
         if (bytes && bytes.length > MAX_IMAGE_BYTES) {
           const mb = (bytes.length / 1048576).toFixed(1);
           await api.sendMessage({

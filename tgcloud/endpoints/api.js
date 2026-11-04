@@ -161,9 +161,9 @@ export default async function (input, ctx) {
     const claimId = claimRows && claimRows[0] ? claimRows[0].id : null;
 
     try {
-      // Platform wall cap ∈ (25s, 30s] — 21s total here, leaving room for the
-      // claim bookkeeping below so the frontend always gets JSON, never a 500.
-      const result = await withTimeout(sendChat(user, userId, message), 21000);
+      // Budget ladder (wall cap ∈ (25s, 30s]): global 17 >= hop 14 >=
+      // create+poll 3+10 — matches the Telegram handler path.
+      const result = await withTimeout(sendChat(user, userId, message), 17000);
       return {
         ok: true,
         text: result.text,
@@ -174,7 +174,7 @@ export default async function (input, ctx) {
       if (err && err.isTimeout) {
         return {
           ok: false,
-          error: '🕐 پاسخ ارائهدهنده بیش از ۲۱ ثانیه طول کشید و قطع شد. لطفاً دوباره تلاش کنید یا ارائهدهنده دیگری انتخاب کنید.',
+          error: '🕐 پاسخ ارائهدهنده بیش از ۱۷ ثانیه طول کشید و قطع شد. لطفاً دوباره تلاش کنید یا ارائهدهنده دیگری انتخاب کنید.',
         };
       }
       return { ok: false, error: err.message };
